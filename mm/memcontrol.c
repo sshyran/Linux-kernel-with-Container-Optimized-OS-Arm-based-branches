@@ -3439,6 +3439,9 @@ static const unsigned int memcg1_events[] = {
 	PGPGOUT,
 	PGFAULT,
 	PGMAJFAULT,
+	PGMAJFAULT_S,
+	PGMAJFAULT_A,
+	PGMAJFAULT_F,
 };
 
 static const char *const memcg1_event_names[] = {
@@ -3446,6 +3449,9 @@ static const char *const memcg1_event_names[] = {
 	"pgpgout",
 	"pgfault",
 	"pgmajfault",
+	"pgmajfault_s",
+	"pgmajfault_a",
+	"pgmajfault_f",
 };
 
 static int memcg_stat_show(struct seq_file *m, void *v)
@@ -5673,6 +5679,9 @@ static int memory_stat_show(struct seq_file *m, void *v)
 
 	seq_printf(m, "pgfault %lu\n", acc.events[PGFAULT]);
 	seq_printf(m, "pgmajfault %lu\n", acc.events[PGMAJFAULT]);
+	seq_printf(m, "pgmajfault %lu\n", acc.events[PGMAJFAULT_S]);
+	seq_printf(m, "pgmajfault %lu\n", acc.events[PGMAJFAULT_A]);
+	seq_printf(m, "pgmajfault %lu\n", acc.events[PGMAJFAULT_F]);
 
 	seq_printf(m, "pgrefill %lu\n", acc.events[PGREFILL]);
 	seq_printf(m, "pgscan %lu\n", acc.events[PGSCAN_KSWAPD] +
