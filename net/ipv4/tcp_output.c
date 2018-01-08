@@ -229,6 +229,7 @@ void tcp_select_initial_window(const struct sock *sk, int __space, __u32 mss,
 			(*rcv_wscale)++;
 		}
 	}
+
 	/* Set the clamp no higher than max representable value */
 	(*window_clamp) = min_t(__u32, U16_MAX << (*rcv_wscale), *window_clamp);
 }
