@@ -492,6 +492,10 @@ static void __init reserve_crashkernel(void)
 
 	/* 0 means: find the address automatically */
 	if (!crash_base) {
+		unsigned long long max_addr = high ? CRASH_ADDR_HIGH_MAX
+						   : CRASH_ADDR_LOW_MAX;
+		unsigned long long base = CRASH_ALIGN;
+
 		/*
 		 * Set CRASH_ADDR_LOW_MAX upper bound for crash memory,
 		 * crashkernel=x,high reserves memory over 4G, also allocates
@@ -499,15 +503,14 @@ static void __init reserve_crashkernel(void)
 		 * But the extra memory is not required for all machines.
 		 * So try low memory first and fall back to high memory
 		 * unless "crashkernel=size[KMG],high" is specified.
+		 * To conserve memory in crash-capture kernel try
+		 * to allocate crash_base at the lowest address possible.
 		 */
-		if (!high)
+		do {
 			crash_base = memblock_phys_alloc_range(crash_size,
-						CRASH_ALIGN, CRASH_ALIGN,
-						CRASH_ADDR_LOW_MAX);
-		if (!crash_base)
-			crash_base = memblock_phys_alloc_range(crash_size,
-						CRASH_ALIGN, CRASH_ALIGN,
-						CRASH_ADDR_HIGH_MAX);
+				CRASH_ALIGN, base, base + crash_size);
+			base += CRASH_ALIGN;
+		} while (!crash_base && base + crash_size <= max_addr);
 		if (!crash_base) {
 			pr_info("crashkernel reservation failed - No suitable area found.\n");
 			return;
