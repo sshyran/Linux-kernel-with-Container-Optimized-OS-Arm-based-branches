@@ -1068,8 +1068,7 @@ SYSCALL_DEFINE2(clock_gettime, const clockid_t, which_clock,
 	return error;
 }
 
-SYSCALL_DEFINE2(clock_adjtime, const clockid_t, which_clock,
-		struct timex __user *, utx)
+int ksys_clock_adjtime(const clockid_t which_clock, struct timex __user * utx)
 {
 	const struct k_clock *kc = clockid_to_kclock(which_clock);
 	struct timex ktx;
@@ -1089,6 +1088,12 @@ SYSCALL_DEFINE2(clock_adjtime, const clockid_t, which_clock,
 		return -EFAULT;
 
 	return err;
+}
+
+SYSCALL_DEFINE2(clock_adjtime, const clockid_t, which_clock,
+		struct timex __user *, utx)
+{
+	return ksys_clock_adjtime(which_clock, utx);
 }
 
 SYSCALL_DEFINE2(clock_getres, const clockid_t, which_clock,
@@ -1148,8 +1153,7 @@ COMPAT_SYSCALL_DEFINE2(clock_gettime, clockid_t, which_clock,
 
 #ifdef CONFIG_COMPAT
 
-COMPAT_SYSCALL_DEFINE2(clock_adjtime, clockid_t, which_clock,
-		       struct compat_timex __user *, utp)
+int compat_ksys_clock_adjtime(clockid_t which_clock, struct compat_timex __user * utp)
 {
 	const struct k_clock *kc = clockid_to_kclock(which_clock);
 	struct timex ktx;
@@ -1170,6 +1174,12 @@ COMPAT_SYSCALL_DEFINE2(clock_adjtime, clockid_t, which_clock,
 		err = compat_put_timex(utp, &ktx);
 
 	return err;
+}
+
+COMPAT_SYSCALL_DEFINE2(clock_adjtime, clockid_t, which_clock,
+		       struct compat_timex __user *, utp)
+{
+	return compat_ksys_clock_adjtime(which_clock, utp);
 }
 
 #endif

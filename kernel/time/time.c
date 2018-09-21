@@ -266,7 +266,7 @@ COMPAT_SYSCALL_DEFINE2(settimeofday, struct compat_timeval __user *, tv,
 }
 #endif
 
-SYSCALL_DEFINE1(adjtimex, struct timex __user *, txc_p)
+int ksys_adjtimex(struct timex __user * txc_p)
 {
 	struct timex txc;		/* Local copy of parameter */
 	int ret;
@@ -281,9 +281,14 @@ SYSCALL_DEFINE1(adjtimex, struct timex __user *, txc_p)
 	return copy_to_user(txc_p, &txc, sizeof(struct timex)) ? -EFAULT : ret;
 }
 
+SYSCALL_DEFINE1(adjtimex, struct timex __user *, txc_p)
+{
+	return ksys_adjtimex(txc_p);
+}
+
 #ifdef CONFIG_COMPAT
 
-COMPAT_SYSCALL_DEFINE1(adjtimex, struct compat_timex __user *, utp)
+int compat_ksys_adjtimex(struct compat_timex __user * utp)
 {
 	struct timex txc;
 	int err, ret;
@@ -300,6 +305,12 @@ COMPAT_SYSCALL_DEFINE1(adjtimex, struct compat_timex __user *, utp)
 
 	return ret;
 }
+
+COMPAT_SYSCALL_DEFINE1(adjtimex, struct compat_timex __user *, utp)
+{
+	return compat_ksys_adjtimex(utp);
+}
+
 #endif
 
 /*
