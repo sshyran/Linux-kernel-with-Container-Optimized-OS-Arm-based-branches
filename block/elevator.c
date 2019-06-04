@@ -240,7 +240,7 @@ out_unlock:
 	return err;
 }
 
-void elevator_exit(struct request_queue *q, struct elevator_queue *e)
+void __elevator_exit(struct request_queue *q, struct elevator_queue *e)
 {
 	mutex_lock(&e->sysfs_lock);
 	if (e->uses_mq && e->type->ops.mq.exit_sched)

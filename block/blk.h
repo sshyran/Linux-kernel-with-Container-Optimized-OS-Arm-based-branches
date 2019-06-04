@@ -5,6 +5,7 @@
 #include <linux/idr.h>
 #include <linux/blk-mq.h>
 #include "blk-mq.h"
+#include "blk-mq-sched.h"
 
 /* Amount of time in which a process may batch requests */
 #define BLK_BATCH_TIME	(HZ/50UL)
@@ -243,9 +244,17 @@ int elevator_init(struct request_queue *);
 int elevator_init_mq(struct request_queue *q);
 int elevator_switch_mq(struct request_queue *q,
 			      struct elevator_type *new_e);
-void elevator_exit(struct request_queue *, struct elevator_queue *);
+			      
+void __elevator_exit(struct request_queue *, struct elevator_queue *);
 int elv_register_queue(struct request_queue *q, bool uevent);
 void elv_unregister_queue(struct request_queue *q);
+
+static inline void elevator_exit(struct request_queue *q,
+		struct elevator_queue *e)
+{
+	blk_mq_sched_free_requests(q);
+	__elevator_exit(q, e);
+}
 
 struct hd_struct *__disk_get_part(struct gendisk *disk, int partno);
 
