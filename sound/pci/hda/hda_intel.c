@@ -1844,9 +1844,6 @@ static int azx_first_init(struct azx *chip)
 			chip->msi = 0;
 	}
 
-	if (azx_acquire_irq(chip, 0) < 0)
-		return -EBUSY;
-
 	pci_set_master(pci);
 	synchronize_irq(bus->irq);
 
@@ -1960,6 +1957,9 @@ static int azx_first_init(struct azx *chip)
 		dev_err(card->dev, "no codecs found!\n");
 		return -ENODEV;
 	}
+
+	if (azx_acquire_irq(chip, 0) < 0)
+		return -EBUSY;
 
 	strcpy(card->driver, "HDA-Intel");
 	strlcpy(card->shortname, driver_short_names[chip->driver_type],
