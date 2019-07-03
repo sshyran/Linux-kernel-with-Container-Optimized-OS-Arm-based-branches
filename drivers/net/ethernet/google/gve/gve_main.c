@@ -670,7 +670,7 @@ int gve_alloc_page(struct gve_priv* priv, struct device* dev,
 		gfp_flags |= GFP_DMA32;
 
 	*page = alloc_page(gfp_flags);
-	if (!page) {
+	if (!*page) {
 		priv->page_alloc_fail++;
 		return -ENOMEM;
 	}
