@@ -2891,6 +2891,7 @@ intel_find_initial_plane_obj(struct intel_crtc *intel_crtc,
 	return;
 
 valid_fb:
+	intel_state->base.rotation = plane_config->rotation;
 	intel_fill_fb_ggtt_view(&intel_state->view, fb,
 				intel_state->base.rotation);
 	intel_state->color_plane[0].stride =
@@ -3357,10 +3358,27 @@ int i9xx_check_plane_surface(struct intel_plane_state *plane_state)
 	return 0;
 }
 
+static bool i9xx_plane_has_windowing(struct intel_plane *plane)
+{
+	struct drm_i915_private *dev_priv = to_i915(plane->base.dev);
+	enum i9xx_plane_id i9xx_plane = plane->i9xx_plane;
+
+	if (IS_CHERRYVIEW(dev_priv))
+		return i9xx_plane == PLANE_B;
+	else if (INTEL_GEN(dev_priv) >= 5 || IS_G4X(dev_priv))
+		return false;
+	else if (IS_GEN4(dev_priv))
+		return i9xx_plane == PLANE_C;
+	else
+		return i9xx_plane == PLANE_B ||
+			i9xx_plane == PLANE_C;
+}
+
 static int
 i9xx_plane_check(struct intel_crtc_state *crtc_state,
 		 struct intel_plane_state *plane_state)
 {
+	struct intel_plane *plane = to_intel_plane(plane_state->base.plane);
 	int ret;
 
 	ret = chv_plane_check_rotation(plane_state);
@@ -3371,7 +3389,8 @@ i9xx_plane_check(struct intel_crtc_state *crtc_state,
 						  &crtc_state->base,
 						  DRM_PLANE_HELPER_NO_SCALING,
 						  DRM_PLANE_HELPER_NO_SCALING,
-						  false, true);
+						  i9xx_plane_has_windowing(plane),
+						  true);
 	if (ret)
 		return ret;
 
@@ -3402,6 +3421,10 @@ static void i9xx_update_plane(struct intel_plane *plane,
 	i915_reg_t reg = DSPCNTR(i9xx_plane);
 	int x = plane_state->color_plane[0].x;
 	int y = plane_state->color_plane[0].y;
+	int crtc_x = plane_state->base.dst.x1;
+	int crtc_y = plane_state->base.dst.y1;
+	int crtc_w = drm_rect_width(&plane_state->base.dst);
+	int crtc_h = drm_rect_height(&plane_state->base.dst);
 	unsigned long irqflags;
 	u32 dspaddr_offset;
 
@@ -3415,18 +3438,18 @@ static void i9xx_update_plane(struct intel_plane *plane,
 	spin_lock_irqsave(&dev_priv->uncore.lock, irqflags);
 
 	if (INTEL_GEN(dev_priv) < 4) {
-		/* pipesrc and dspsize control the size that is scaled from,
-		 * which should always be the user's requested size.
+		/*
+		 * PLANE_A doesn't actually have a full window
+		 * generator but let's assume we still need to
+		 * program whatever is there.
 		 */
+		I915_WRITE_FW(DSPPOS(i9xx_plane), (crtc_y << 16) | crtc_x);
 		I915_WRITE_FW(DSPSIZE(i9xx_plane),
-			      ((crtc_state->pipe_src_h - 1) << 16) |
-			      (crtc_state->pipe_src_w - 1));
-		I915_WRITE_FW(DSPPOS(i9xx_plane), 0);
+				((crtc_h - 1) << 16) | (crtc_w - 1));
 	} else if (IS_CHERRYVIEW(dev_priv) && i9xx_plane == PLANE_B) {
+		I915_WRITE_FW(PRIMPOS(i9xx_plane), (crtc_y << 16) | crtc_x);
 		I915_WRITE_FW(PRIMSIZE(i9xx_plane),
-			      ((crtc_state->pipe_src_h - 1) << 16) |
-			      (crtc_state->pipe_src_w - 1));
-		I915_WRITE_FW(PRIMPOS(i9xx_plane), 0);
+				((crtc_h - 1) << 16) | (crtc_w - 1));
 		I915_WRITE_FW(PRIMCNSTALPHA(i9xx_plane), 0);
 	}
 
@@ -3577,10 +3600,10 @@ static u32 skl_plane_ctl_format(uint32_t pixel_format)
 	case DRM_FORMAT_XRGB8888:
 	case DRM_FORMAT_ARGB8888:
 		return PLANE_CTL_FORMAT_XRGB_8888;
+	case DRM_FORMAT_XBGR2101010:
+		return PLANE_CTL_FORMAT_XRGB_2101010 | PLANE_CTL_ORDER_RGBX;
 	case DRM_FORMAT_XRGB2101010:
 		return PLANE_CTL_FORMAT_XRGB_2101010;
-	case DRM_FORMAT_XBGR2101010:
-		return PLANE_CTL_ORDER_RGBX | PLANE_CTL_FORMAT_XRGB_2101010;
 	case DRM_FORMAT_YUYV:
 		return PLANE_CTL_FORMAT_YUV422 | PLANE_CTL_YUV422_YUYV;
 	case DRM_FORMAT_YVYU:
@@ -7870,7 +7893,14 @@ i9xx_get_initial_plane_config(struct intel_crtc *crtc,
 			plane_config->tiling = I915_TILING_X;
 			fb->modifier = I915_FORMAT_MOD_X_TILED;
 		}
+
+		if (val & DISPPLANE_ROTATE_180)
+			plane_config->rotation = DRM_MODE_ROTATE_180;
 	}
+
+	if (IS_CHERRYVIEW(dev_priv) && pipe == PIPE_B &&
+	    val & DISPPLANE_MIRROR)
+		plane_config->rotation |= DRM_MODE_REFLECT_X;
 
 	pixel_format = val & DISPPLANE_PIXFORMAT_MASK;
 	fourcc = i9xx_format_to_fourcc(pixel_format);
@@ -8939,6 +8969,29 @@ skylake_get_initial_plane_config(struct intel_crtc *crtc,
 		MISSING_CASE(tiling);
 		goto error;
 	}
+
+	/*
+	 * DRM_MODE_ROTATE_ is counter clockwise to stay compatible with Xrandr
+	 * while i915 HW rotation is clockwise, thats why this swapping.
+	 */
+	switch (val & PLANE_CTL_ROTATE_MASK) {
+	case PLANE_CTL_ROTATE_0:
+		plane_config->rotation = DRM_MODE_ROTATE_0;
+		break;
+	case PLANE_CTL_ROTATE_90:
+		plane_config->rotation = DRM_MODE_ROTATE_270;
+		break;
+	case PLANE_CTL_ROTATE_180:
+		plane_config->rotation = DRM_MODE_ROTATE_180;
+		break;
+	case PLANE_CTL_ROTATE_270:
+		plane_config->rotation = DRM_MODE_ROTATE_90;
+		break;
+	}
+
+	if (INTEL_GEN(dev_priv) >= 10 &&
+	    val & PLANE_CTL_FLIP_HORIZONTAL)
+		plane_config->rotation |= DRM_MODE_REFLECT_X;
 
 	base = I915_READ(PLANE_SURF(pipe, plane_id)) & 0xfffff000;
 	plane_config->base = base;
@@ -15250,6 +15303,14 @@ retry:
 			ret = drm_atomic_add_affected_planes(state, crtc);
 			if (ret)
 				goto out;
+
+			/*
+			 * FIXME hack to force a LUT update to avoid the
+			 * plane update forcing the pipe gamma on without
+			 * having a proper LUT loaded. Remove once we
+			 * have readout for pipe gamma enable.
+			 */
+			crtc_state->color_mgmt_changed = true;
 		}
 	}
 

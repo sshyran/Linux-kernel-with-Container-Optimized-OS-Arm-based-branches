@@ -150,36 +150,15 @@ EXPORT_SYMBOL(drm_dp_link_train_channel_eq_delay);
 
 u8 drm_dp_link_rate_to_bw_code(int link_rate)
 {
-	switch (link_rate) {
-	default:
-		WARN(1, "unknown DP link rate %d, using %x\n", link_rate,
-		     DP_LINK_BW_1_62);
-	case 162000:
-		return DP_LINK_BW_1_62;
-	case 270000:
-		return DP_LINK_BW_2_7;
-	case 540000:
-		return DP_LINK_BW_5_4;
-	case 810000:
-		return DP_LINK_BW_8_1;
-	}
+	/* Spec says link_bw = link_rate / 0.27Gbps */
+	return link_rate / 27000;
 }
 EXPORT_SYMBOL(drm_dp_link_rate_to_bw_code);
 
 int drm_dp_bw_code_to_link_rate(u8 link_bw)
 {
-	switch (link_bw) {
-	default:
-		WARN(1, "unknown DP link BW code %x, using 162000\n", link_bw);
-	case DP_LINK_BW_1_62:
-		return 162000;
-	case DP_LINK_BW_2_7:
-		return 270000;
-	case DP_LINK_BW_5_4:
-		return 540000;
-	case DP_LINK_BW_8_1:
-		return 810000;
-	}
+	/* Spec says link_rate = link_bw * 0.27Gbps */
+	return link_bw * 27000;
 }
 EXPORT_SYMBOL(drm_dp_bw_code_to_link_rate);
 
@@ -552,6 +531,7 @@ int drm_dp_downstream_max_bpc(const u8 dpcd[DP_RECEIVER_CAP_SIZE],
 		case DP_DS_16BPC:
 			return 16;
 		}
+		/* fall through */
 	default:
 		return 0;
 	}

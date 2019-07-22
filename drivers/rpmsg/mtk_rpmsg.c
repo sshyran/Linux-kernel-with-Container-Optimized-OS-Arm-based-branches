@@ -211,7 +211,7 @@ static int mtk_rpmsg_register_device(struct mtk_rpmsg_rproc_subdev *mtk_subdev,
 	rpdev->ops = &mtk_rpmsg_device_ops;
 	rpdev->src = info->src;
 	rpdev->dst = info->dst;
-	strncpy(rpdev->id.name, info->name, RPMSG_NAME_SIZE);
+	strscpy(rpdev->id.name, info->name, RPMSG_NAME_SIZE);
 
 	rpdev->dev.of_node =
 		mtk_rpmsg_match_device_subnode(pdev->dev.of_node, info->name);
@@ -260,7 +260,7 @@ static int mtk_rpmsg_create_device(struct mtk_rpmsg_rproc_subdev *mtk_subdev,
 	if (!info)
 		return -ENOMEM;
 
-	strncpy(info->info.name, name, RPMSG_NAME_SIZE);
+	strscpy(info->info.name, name, RPMSG_NAME_SIZE);
 	info->info.src = addr;
 	info->info.dst = RPMSG_ADDR_ANY;
 	mutex_lock(&mtk_subdev->channels_lock);
@@ -330,14 +330,31 @@ int mtk_rpmsg_prepare(struct rproc_subdev *subdev)
 	return 0;
 }
 
+void mtk_rpmsg_unprepare(struct rproc_subdev *subdev)
+{
+	struct mtk_rpmsg_rproc_subdev *mtk_subdev = to_mtk_subdev(subdev);
+
+	if (mtk_subdev->ns_ept) {
+		mtk_rpmsg_destroy_ept(mtk_subdev->ns_ept);
+		mtk_subdev->ns_ept = NULL;
+	}
+}
+
 void mtk_rpmsg_stop(struct rproc_subdev *subdev, bool crashed)
 {
 	struct mtk_rpmsg_channel_info *info, *next;
 	struct mtk_rpmsg_rproc_subdev *mtk_subdev = to_mtk_subdev(subdev);
 	struct device *dev = &mtk_subdev->pdev->dev;
 
-	if (mtk_subdev->ns_ept)
+	/*
+	 * Destroy the name service endpoint here, to avoid new channel being
+	 * created after the rpmsg_unregister_device loop below.
+	 */
+	if (mtk_subdev->ns_ept) {
 		mtk_rpmsg_destroy_ept(mtk_subdev->ns_ept);
+		mtk_subdev->ns_ept = NULL;
+	}
+
 	cancel_work_sync(&mtk_subdev->register_work);
 
 	mutex_lock(&mtk_subdev->channels_lock);
@@ -374,6 +391,7 @@ mtk_rpmsg_create_rproc_subdev(struct platform_device *pdev,
 	mtk_subdev->pdev = pdev;
 	mtk_subdev->subdev.prepare = mtk_rpmsg_prepare;
 	mtk_subdev->subdev.stop = mtk_rpmsg_stop;
+	mtk_subdev->subdev.unprepare = mtk_rpmsg_unprepare;
 	mtk_subdev->info = info;
 	INIT_LIST_HEAD(&mtk_subdev->channels);
 	INIT_WORK(&mtk_subdev->register_work,

@@ -55,7 +55,7 @@ static void scp_init_ipi_handler(void *data, unsigned int len, void *priv)
 	struct scp_run *run = (struct scp_run *)data;
 
 	scp->run.signaled = run->signaled;
-	strncpy(scp->run.fw_ver, run->fw_ver, SCP_FW_VER_LEN);
+	strscpy(scp->run.fw_ver, run->fw_ver, SCP_FW_VER_LEN);
 	scp->run.dec_capability = run->dec_capability;
 	scp->run.enc_capability = run->enc_capability;
 	wake_up_interruptible(&scp->run.wq);
@@ -225,6 +225,10 @@ static int scp_load(struct rproc *rproc, const struct firmware *fw)
 	writel(0x0, scp->reg_base + MT8183_SCP_CLK_SW_SEL);
 	writel(0x0, scp->reg_base + MT8183_SCP_CLK_DIV_SEL);
 
+	/* Initialize TCM before loading FW. */
+	writel(0x0, scp->reg_base + MT8183_SCP_L1_SRAM_PD);
+	writel(0x0, scp->reg_base + MT8183_SCP_TCM_TAIL_SRAM_PD);
+
 	/* Turn on the power of SCP's SRAM before using it. */
 	writel(0x0, scp->reg_base + MT8183_SCP_SRAM_PDN);
 	ret = scp_elf_load_segments(rproc, fw);
@@ -312,6 +316,8 @@ static int scp_stop(struct rproc *rproc)
 	}
 
 	scp_reset_assert(scp);
+	/* Disable SCP watchdog */
+	writel(0, scp->reg_base + MT8183_WDT_CFG);
 	clk_disable_unprepare(scp->clk);
 
 	return 0;
@@ -409,13 +415,13 @@ static int scp_reserve_mem_init(struct mtk_scp *scp)
 		scp_reserve_mblock[id].start_phys =
 			scp_mem_base_phys + accumlate_memory_size;
 		accumlate_memory_size += scp_reserve_mblock[id].size;
-		dev_info(scp->dev,
-			 "[reserve_mem:%d]: phys:0x%llx - 0x%llx (0x%llx)\n",
-			 id,
-			 (unsigned long long)scp_reserve_mblock[id].start_phys,
-			 (unsigned long long)(scp_reserve_mblock[id].start_phys +
-				 scp_reserve_mblock[id].size),
-			 (unsigned long long)scp_reserve_mblock[id].size);
+		dev_info(
+			scp->dev,
+			"[reserve_mem:%d]: phys:0x%llx - 0x%llx (0x%llx)\n", id,
+			(unsigned long long)scp_reserve_mblock[id].start_phys,
+			(unsigned long long)(scp_reserve_mblock[id].start_phys +
+					     scp_reserve_mblock[id].size),
+			(unsigned long long)scp_reserve_mblock[id].size);
 	}
 	return 0;
 }
