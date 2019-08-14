@@ -97,8 +97,8 @@ static struct dev_pm_opp *_find_opp_of_np(struct opp_table *opp_table,
 	return NULL;
 }
 
-struct device_node *of_parse_required_opp(struct device_node *np,
-					  int index)
+static struct device_node *of_parse_required_opp(struct device_node *np,
+						 int index)
 {
 	struct device_node *required_np;
 
@@ -110,15 +110,6 @@ struct device_node *of_parse_required_opp(struct device_node *np,
 
 	return required_np;
 }
-EXPORT_SYMBOL_GPL(of_parse_required_opp);
-
-/* The caller must call dev_pm_opp_put() after the OPP is used */
-struct dev_pm_opp *dev_pm_opp_find_opp_of_np(struct opp_table *opp_table,
-					     struct device_node *opp_np)
-{
-	return _find_opp_of_np(opp_table, opp_np);
-}
-EXPORT_SYMBOL_GPL(dev_pm_opp_find_opp_of_np);
 
 /* The caller must call dev_pm_opp_put_opp_table() after the table is used */
 static struct opp_table *_find_table_of_opp_np(struct device_node *opp_np)
@@ -150,7 +141,6 @@ err:
 static void _opp_table_free_required_tables(struct opp_table *opp_table)
 {
 	struct opp_table **required_opp_tables = opp_table->required_opp_tables;
-	struct device **genpd_virt_devs = opp_table->genpd_virt_devs;
 	int i;
 
 	if (!required_opp_tables)
@@ -158,16 +148,14 @@ static void _opp_table_free_required_tables(struct opp_table *opp_table)
 
 	for (i = 0; i < opp_table->required_opp_count; i++) {
 		if (IS_ERR_OR_NULL(required_opp_tables[i]))
-			break;
+			continue;
 
 		dev_pm_opp_put_opp_table(required_opp_tables[i]);
 	}
 
 	kfree(required_opp_tables);
-	kfree(genpd_virt_devs);
 
 	opp_table->required_opp_count = 0;
-	opp_table->genpd_virt_devs = NULL;
 	opp_table->required_opp_tables = NULL;
 }
 
@@ -180,9 +168,8 @@ static void _opp_table_alloc_required_tables(struct opp_table *opp_table,
 					     struct device_node *opp_np)
 {
 	struct opp_table **required_opp_tables;
-	struct device **genpd_virt_devs = NULL;
-	struct device_node *required_np, *np;
-	int count, count_pd, i;
+	struct device_node *np;
+	int count;
 
 	/* Traversing the first OPP node is all we need */
 	np = of_get_next_available_child(opp_np, NULL);
@@ -192,54 +179,57 @@ static void _opp_table_alloc_required_tables(struct opp_table *opp_table,
 	}
 
 	count = of_count_phandle_with_args(np, "required-opps", NULL);
+	of_node_put(np);
 	if (!count)
-		goto put_np;
-
-	/*
-	 * Check the number of power-domains to know if we need to deal
-	 * with virtual devices. In some cases we have devices with multiple
-	 * power domains but with only one of them being scalable, hence
-	 * 'count' could be 1, but we still have to deal with multiple genpds
-	 * and virtual devices.
-	 */
-	count_pd = of_count_phandle_with_args(dev->of_node, "power-domains",
-					      "#power-domain-cells");
-	if (count_pd > 1) {
-		genpd_virt_devs = kcalloc(count, sizeof(*genpd_virt_devs),
-					GFP_KERNEL);
-		if (!genpd_virt_devs)
-			goto put_np;
-	}
+		return;
 
 	required_opp_tables = kcalloc(count, sizeof(*required_opp_tables),
 				      GFP_KERNEL);
-	if (!required_opp_tables) {
-		kfree(genpd_virt_devs);
-		goto put_np;
-	}
+	if (!required_opp_tables)
+		return;
 
-	opp_table->genpd_virt_devs = genpd_virt_devs;
 	opp_table->required_opp_tables = required_opp_tables;
 	opp_table->required_opp_count = count;
+}
 
-	for (i = 0; i < count; i++) {
-		required_np = of_parse_required_opp(np, i);
-		if (!required_np)
-			goto free_required_tables;
+void _of_lazy_link_required_tables(struct opp_table *src)
+{
+	struct dev_pm_opp *src_opp, *tmp_opp;
+	struct opp_table *req_table;
+	struct device_node *req_np;
+	int i;
 
-		required_opp_tables[i] = _find_table_of_opp_np(required_np);
-		of_node_put(required_np);
+	mutex_lock(&src->lock);
 
-		if (IS_ERR(required_opp_tables[i]))
-			goto free_required_tables;
+	if (list_empty(&src->opp_list))
+		goto out;
+
+	src_opp = list_first_entry(&src->opp_list, struct dev_pm_opp, node);
+
+	for (i = 0; i < src->required_opp_count; i++) {
+		if (src->required_opp_tables[i])
+			continue;
+
+		req_np = of_parse_required_opp(src_opp->np, i);
+		if (!req_np)
+			continue;
+
+		req_table = _find_table_of_opp_np(req_np);
+		of_node_put(req_np);
+		if (!req_table)
+			continue;
+
+		src->required_opp_tables[i] = req_table;
+		list_for_each_entry(tmp_opp, &src->opp_list, node) {
+			req_np = of_parse_required_opp(tmp_opp->np, i);
+			tmp_opp->required_opps[i] = _find_opp_of_np(req_table,
+								    req_np);
+			of_node_put(req_np);
+		}
 	}
 
-	goto put_np;
-
-free_required_tables:
-	_opp_table_free_required_tables(opp_table);
-put_np:
-	of_node_put(np);
+out:
+	mutex_unlock(&src->lock);
 }
 
 void _of_init_opp_table(struct opp_table *opp_table, struct device *dev,
@@ -302,7 +292,7 @@ void _of_opp_free_required_opps(struct opp_table *opp_table,
 
 	for (i = 0; i < opp_table->required_opp_count; i++) {
 		if (!required_opps[i])
-			break;
+			continue;
 
 		/* Put the reference back */
 		dev_pm_opp_put(required_opps[i]);
@@ -317,9 +307,7 @@ static int _of_opp_alloc_required_opps(struct opp_table *opp_table,
 				       struct dev_pm_opp *opp)
 {
 	struct dev_pm_opp **required_opps;
-	struct opp_table *required_table;
-	struct device_node *np;
-	int i, ret, count = opp_table->required_opp_count;
+	int count = opp_table->required_opp_count;
 
 	if (!count)
 		return 0;
@@ -330,32 +318,7 @@ static int _of_opp_alloc_required_opps(struct opp_table *opp_table,
 
 	opp->required_opps = required_opps;
 
-	for (i = 0; i < count; i++) {
-		required_table = opp_table->required_opp_tables[i];
-
-		np = of_parse_required_opp(opp->np, i);
-		if (unlikely(!np)) {
-			ret = -ENODEV;
-			goto free_required_opps;
-		}
-
-		required_opps[i] = _find_opp_of_np(required_table, np);
-		of_node_put(np);
-
-		if (!required_opps[i]) {
-			pr_err("%s: Unable to find required OPP node: %pOF (%d)\n",
-			       __func__, opp->np, i);
-			ret = -ENODEV;
-			goto free_required_opps;
-		}
-	}
-
 	return 0;
-
-free_required_opps:
-	_of_opp_free_required_opps(opp_table, opp);
-
-	return ret;
 }
 
 static bool _opp_is_supported(struct device *dev, struct opp_table *opp_table,

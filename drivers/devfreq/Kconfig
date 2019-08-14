@@ -73,9 +73,7 @@ config DEVFREQ_GOV_PASSIVE
 	  through sysfs entries. The passive governor recommends that
 	  devfreq device uses the OPP table to get the frequency/voltage.
 	  Alternatively the governor can also be chosen to scale based on
-	  the online CPUs current frequency. A CPU frequency to device
-	  frequency mapping table(s) is auto-populated by the governor
-	  for this purpose.
+	  the online CPUs current frequency.
 
 comment "DEVFREQ Drivers"
 

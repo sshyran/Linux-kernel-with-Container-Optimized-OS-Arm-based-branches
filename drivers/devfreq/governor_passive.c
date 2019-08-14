@@ -16,86 +16,89 @@
 #include <linux/cpumask.h>
 #include <linux/device.h>
 #include <linux/devfreq.h>
-#include <linux/of.h>
 #include <linux/slab.h>
 #include "governor.h"
 
 static unsigned int xlate_cpufreq_to_devfreq(struct devfreq_passive_data *data,
 					     unsigned int cpu)
 {
-	unsigned int cpu_min, cpu_max;
+	unsigned int cpu_min, cpu_max, dev_min, dev_max, cpu_percent, max_state;
+	struct devfreq_cpu_state *cpu_state = data->cpu_state[cpu];
 	struct devfreq *devfreq = (struct devfreq *)data->this;
-	unsigned int dev_min, dev_max, cpu_percent, cpu_freq = 0, freq = 0;
 	unsigned long *freq_table = devfreq->profile->freq_table;
-	struct device *dev = devfreq->dev.parent;
-	struct devfreq_map *map;
-	int opp_cnt, i;
+	struct dev_pm_opp *opp = NULL, *cpu_opp = NULL;
+	unsigned long cpu_freq, freq;
 
-	if (!data->state[cpu] || data->state[cpu]->first_cpu != cpu) {
-		freq = 0;
-		goto out;
-	}
+	if (!cpu_state || cpu_state->first_cpu != cpu ||
+	    !cpu_state->opp_table || !devfreq->opp_table)
+		return 0;
 
-	/* Use Interpolation if map is not available */
-	cpu_freq = data->state[cpu]->freq;
-	if (!data->map) {
-		cpu_min = data->state[cpu]->min_freq;
-		cpu_max = data->state[cpu]->max_freq;
+	cpu_freq = cpu_state->freq * 1000;
+	cpu_opp = devfreq_recommended_opp(cpu_state->dev, &cpu_freq, 0);
+	if (IS_ERR(cpu_opp))
+		return 0;
+
+	opp = dev_pm_opp_xlate_opp(cpu_state->opp_table,
+				   devfreq->opp_table, cpu_opp);
+	dev_pm_opp_put(cpu_opp);
+
+	if (!IS_ERR(opp)) {
+		freq = dev_pm_opp_get_freq(opp);
+		dev_pm_opp_put(opp);
+	} else {
+		/* Use Interpolation if required opps is not available */
+		cpu_min = cpu_state->min_freq;
+		cpu_max = cpu_state->max_freq;
+		cpu_freq = cpu_state->freq;
+
 		if (freq_table) {
-			dev_min = freq_table[0];
-			dev_max = freq_table[devfreq->profile->max_state - 1];
+			/* Get minimum frequency according to sorting order */
+			max_state = freq_table[devfreq->profile->max_state - 1];
+			if (freq_table[0] < max_state) {
+				dev_min = freq_table[0];
+				dev_max = max_state;
+			} else {
+				dev_min = max_state;
+				dev_max = freq_table[0];
+			}
 		} else {
 			if (devfreq->max_freq <= devfreq->min_freq)
 				return 0;
 			dev_min = devfreq->min_freq;
 			dev_max = devfreq->max_freq;
 		}
-
 		cpu_percent = ((cpu_freq - cpu_min) * 100) / cpu_max - cpu_min;
 		freq = dev_min + mult_frac(dev_max - dev_min, cpu_percent, 100);
-		goto out;
 	}
 
-	map = data->map[cpu];
-	opp_cnt = dev_pm_opp_get_opp_count(dev);
-	for (i = 0; i < opp_cnt; i++) {
-		freq = max(freq, map[i].dev_hz);
-		if (map[i].cpu_khz >= cpu_freq)
-			break;
-	}
-out:
-	dev_dbg(dev, "CPU%u: %d -> dev: %u\n", cpu, cpu_freq, freq);
 	return freq;
 }
 
-static int devfreq_passive_get_target_freq(struct devfreq *devfreq,
+static int get_target_freq_with_cpufreq(struct devfreq *devfreq,
+					unsigned long *freq)
+{
+	struct devfreq_passive_data *p_data =
+				(struct devfreq_passive_data *)devfreq->data;
+	unsigned int cpu, target_freq = 0;
+
+	for_each_online_cpu(cpu)
+		target_freq = max(target_freq,
+				  xlate_cpufreq_to_devfreq(p_data, cpu));
+
+	*freq = target_freq;
+
+	return 0;
+}
+
+static int get_target_freq_with_devfreq(struct devfreq *devfreq,
 					unsigned long *freq)
 {
 	struct devfreq_passive_data *p_data
 			= (struct devfreq_passive_data *)devfreq->data;
 	struct devfreq *parent_devfreq = (struct devfreq *)p_data->parent;
 	unsigned long child_freq = ULONG_MAX;
-	struct dev_pm_opp *opp;
-	unsigned int cpu, tgt_freq = 0;
+	struct dev_pm_opp *opp = NULL, *p_opp = NULL;
 	int i, count, ret = 0;
-
-	/*
-	 * If the devfreq device with passive governor has the specific method
-	 * to determine the next frequency, should use the get_target_freq()
-	 * of struct devfreq_passive_data.
-	 */
-	if (p_data->get_target_freq) {
-		ret = p_data->get_target_freq(devfreq, freq);
-		goto out;
-	}
-
-	if (p_data->cpufreq_type) {
-		for_each_possible_cpu(cpu)
-			tgt_freq = max(tgt_freq,
-				       xlate_cpufreq_to_devfreq(p_data, cpu));
-		*freq = tgt_freq;
-		goto out;
-	}
 
 	/*
 	 * If the parent and passive devfreq device uses the OPP table,
@@ -121,13 +124,20 @@ static int devfreq_passive_get_target_freq(struct devfreq *devfreq,
 	 * list of parent device. Because in this case, *freq is temporary
 	 * value which is decided by ondemand governor.
 	 */
-	opp = devfreq_recommended_opp(parent_devfreq->dev.parent, freq, 0);
-	if (IS_ERR(opp)) {
-		ret = PTR_ERR(opp);
+	p_opp = devfreq_recommended_opp(parent_devfreq->dev.parent, freq, 0);
+	if (IS_ERR(p_opp)) {
+		ret = PTR_ERR(p_opp);
 		goto out;
 	}
 
-	dev_pm_opp_put(opp);
+	if (devfreq->opp_table && parent_devfreq->opp_table)
+		opp = dev_pm_opp_xlate_opp(parent_devfreq->opp_table,
+					   devfreq->opp_table, p_opp);
+	if (opp) {
+		*freq = dev_pm_opp_get_freq(opp);
+		dev_pm_opp_put(opp);
+		goto out;
+	}
 
 	/*
 	 * Get the OPP table's index of decided freqeuncy by governor
@@ -154,6 +164,40 @@ static int devfreq_passive_get_target_freq(struct devfreq *devfreq,
 	*freq = child_freq;
 
 out:
+	if (!IS_ERR_OR_NULL(opp))
+		dev_pm_opp_put(p_opp);
+
+	return ret;
+}
+
+static int devfreq_passive_get_target_freq(struct devfreq *devfreq,
+					   unsigned long *freq)
+{
+	struct devfreq_passive_data *p_data =
+				(struct devfreq_passive_data *)devfreq->data;
+	int ret;
+
+	/*
+	 * If the devfreq device with passive governor has the specific method
+	 * to determine the next frequency, should use the get_target_freq()
+	 * of struct devfreq_passive_data.
+	 */
+	if (p_data->get_target_freq)
+		return p_data->get_target_freq(devfreq, freq);
+
+	switch (p_data->parent_type) {
+	case DEVFREQ_PARENT_DEV:
+		ret = get_target_freq_with_devfreq(devfreq, freq);
+		break;
+	case CPUFREQ_PARENT_DEV:
+		ret = get_target_freq_with_cpufreq(devfreq, freq);
+		break;
+	default:
+		ret = -EINVAL;
+		dev_err(&devfreq->dev, "Invalid parent type\n");
+		break;
+	}
+
 	return ret;
 }
 
@@ -217,190 +261,130 @@ static int cpufreq_passive_notifier_call(struct notifier_block *nb,
 	struct devfreq_passive_data *data =
 			container_of(nb, struct devfreq_passive_data, nb);
 	struct devfreq *devfreq = (struct devfreq *)data->this;
+	struct devfreq_cpu_state *cpu_state;
 	struct cpufreq_freqs *freq = ptr;
-	struct devfreq_cpu_state *state;
-	int ret = 0;
+	unsigned int current_freq;
+	int ret;
 
-	if (event != CPUFREQ_POSTCHANGE)
-		goto out;
+	if (event != CPUFREQ_POSTCHANGE || !freq ||
+	    !data->cpu_state[freq->policy->cpu])
+		return 0;
 
-	state = data->state[freq->cpu];
-	if (!state)
-		goto out;
+	cpu_state = data->cpu_state[freq->policy->cpu];
+	if (cpu_state->freq == freq->new)
+		return 0;
 
-	if (state->freq != freq->new) {
-		state->freq = freq->new;
-		mutex_lock(&devfreq->lock);
-		ret = update_devfreq(devfreq);
-		mutex_unlock(&devfreq->lock);
-		if (ret)
-			dev_err(&devfreq->dev, "Frequency update failed.\n");
+	/* Backup current freq and pre-update cpu state freq*/
+	current_freq = cpu_state->freq;
+	cpu_state->freq = freq->new;
+
+	mutex_lock(&devfreq->lock);
+	ret = update_devfreq(devfreq);
+	mutex_unlock(&devfreq->lock);
+	if (ret) {
+		cpu_state->freq = current_freq;
+		dev_err(&devfreq->dev, "Couldn't update the frequency.\n");
+		return ret;
 	}
-out:
-	return ret;
+
+	return 0;
 }
 
 static int cpufreq_passive_register(struct devfreq_passive_data **p_data)
 {
-	unsigned int cpu;
-	struct devfreq_map **cpu_map;
-	struct devfreq_map *map, *per_cpu_map;
 	struct devfreq_passive_data *data = *p_data;
 	struct devfreq *devfreq = (struct devfreq *)data->this;
-	int i, count = 0, opp_cnt = 0, ret = 0, iter_val = 0;
-	struct device_node *np, *opp_table_np, *cpu_np;
-	struct opp_table *opp_table, *cpu_opp_tbl;
 	struct device *dev = devfreq->dev.parent;
+	struct opp_table *opp_table = NULL;
 	struct devfreq_cpu_state *state;
-	struct dev_pm_opp *opp, *cpu_opp;
 	struct cpufreq_policy *policy;
 	struct device *cpu_dev;
-	u64 cpu_khz, dev_hz;
+	unsigned int cpu;
+	int ret;
 
 	get_online_cpus();
 	data->nb.notifier_call = cpufreq_passive_notifier_call;
 	ret = cpufreq_register_notifier(&data->nb,
 					CPUFREQ_TRANSITION_NOTIFIER);
-	if (ret)
-		return ret;
+	if (ret) {
+		dev_err(dev, "Couldn't register cpufreq notifier.\n");
+		data->nb.notifier_call = NULL;
+		goto out;
+	}
 
 	/* Populate devfreq_cpu_state */
 	for_each_online_cpu(cpu) {
-		if (data->state[cpu])
+		if (data->cpu_state[cpu])
 			continue;
 
 		policy = cpufreq_cpu_get(cpu);
 		if (policy) {
 			state = kzalloc(sizeof(*state), GFP_KERNEL);
-			if (!state)
-				return -ENOMEM;
+			if (!state) {
+				ret = -ENOMEM;
+				goto out;
+			}
 
+			cpu_dev = get_cpu_device(cpu);
+			if (!cpu_dev) {
+				dev_err(dev, "Couldn't get cpu device.\n");
+				ret = -ENODEV;
+				goto out;
+			}
+
+			opp_table = dev_pm_opp_get_opp_table(cpu_dev);
+			if (IS_ERR(devfreq->opp_table)) {
+				ret = PTR_ERR(opp_table);
+				goto out;
+			}
+
+			state->dev = cpu_dev;
+			state->opp_table = opp_table;
 			state->first_cpu = cpumask_first(policy->related_cpus);
 			state->freq = policy->cur;
 			state->min_freq = policy->cpuinfo.min_freq;
 			state->max_freq = policy->cpuinfo.max_freq;
-			data->state[cpu] = state;
+			data->cpu_state[cpu] = state;
 			cpufreq_cpu_put(policy);
 		} else {
-			return -EPROBE_DEFER;
+			ret = -EPROBE_DEFER;
+			goto out;
 		}
 	}
-
-	opp_table_np = dev_pm_opp_of_get_opp_desc_node(dev);
-	if (!opp_table_np)
-		goto out;
-
-	opp_cnt = dev_pm_opp_get_opp_count(dev);
-	if (opp_cnt <= 0)
-		goto put_opp_table;
-
-	/* Allocate memory for devfreq_map*/
-	cpu_map = kcalloc(num_possible_cpus(), sizeof(*cpu_map), GFP_KERNEL);
-	if (!cpu_map)
-		return -ENOMEM;
-
-	for_each_possible_cpu(cpu) {
-		per_cpu_map = kcalloc(opp_cnt, sizeof(*per_cpu_map),
-				      GFP_KERNEL);
-		if (!per_cpu_map)
-			return -ENOMEM;
-		cpu_map[cpu] = per_cpu_map;
-	}
-	data->map = cpu_map;
-
-	/* Populate devfreq_map */
-	opp_table = dev_pm_opp_get_opp_table(dev);
-	if (!opp_table)
-		return -ENOMEM;
-
-	for_each_available_child_of_node(opp_table_np, np) {
-		opp = dev_pm_opp_find_opp_of_np(opp_table, np);
-		if (IS_ERR(opp))
-			continue;
-
-		dev_hz = dev_pm_opp_get_freq(opp);
-		dev_pm_opp_put(opp);
-
-		count = of_count_phandle_with_args(np, "required-opps", NULL);
-		for (i = 0; i < count; i++) {
-			for_each_possible_cpu(cpu) {
-				cpu_dev = get_cpu_device(cpu);
-				if (!cpu_dev) {
-					dev_err(dev, "CPU get device failed.\n");
-					continue;
-				}
-
-				cpu_np = of_parse_required_opp(np, i);
-				if (!cpu_np) {
-					dev_err(dev, "Parsing required opp failed.\n");
-					continue;
-				}
-
-				/* Get cpu opp-table */
-				cpu_opp_tbl = dev_pm_opp_get_opp_table(cpu_dev);
-				if (!cpu_opp_tbl) {
-					dev_err(dev, "CPU opp table get failed.\n");
-					goto put_cpu_node;
-				}
-
-				/* Match the cpu opp node from required-opp with
-				 * the cpu-opp table */
-				cpu_opp = dev_pm_opp_find_opp_of_np(cpu_opp_tbl,
-								    cpu_np);
-				if (!cpu_opp) {
-					dev_dbg(dev, "CPU opp get failed.\n");
-					goto put_cpu_opp_table;
-				}
-
-				cpu_khz = dev_pm_opp_get_freq(cpu_opp);
-				if (cpu_opp && cpu_khz) {
-					/* Update freq-map if not already set */
-					map = cpu_map[cpu];
-					map[iter_val].cpu_khz = cpu_khz / 1000;
-					map[iter_val].dev_hz = dev_hz;
-				}
-				dev_pm_opp_put(cpu_opp);
-put_cpu_opp_table:
-				dev_pm_opp_put_opp_table(cpu_opp_tbl);
-put_cpu_node:
-				of_node_put(cpu_np);
-			}
-		}
-		iter_val++;
-	}
-	dev_pm_opp_put_opp_table(opp_table);
-put_opp_table:
-	of_node_put(opp_table_np);
 out:
 	put_online_cpus();
+	if (ret)
+		return ret;
 
 	/* Update devfreq */
 	mutex_lock(&devfreq->lock);
 	ret = update_devfreq(devfreq);
 	mutex_unlock(&devfreq->lock);
 	if (ret)
-		dev_err(dev, "Frequency update failed.\n");
+		dev_err(dev, "Couldn't update the frequency.\n");
 
 	return ret;
 }
 
 static int cpufreq_passive_unregister(struct devfreq_passive_data **p_data)
 {
-	int cpu;
 	struct devfreq_passive_data *data = *p_data;
+	struct devfreq_cpu_state *cpu_state;
+	int cpu;
 
-	cpufreq_unregister_notifier(&data->nb,
-				    CPUFREQ_TRANSITION_NOTIFIER);
+	if (data->nb.notifier_call)
+		cpufreq_unregister_notifier(&data->nb,
+					    CPUFREQ_TRANSITION_NOTIFIER);
 
 	for_each_possible_cpu(cpu) {
-		kfree(data->state[cpu]);
-		kfree(data->map[cpu]);
-		data->state[cpu] = NULL;
-		data->map[cpu] = NULL;
+		cpu_state = data->cpu_state[cpu];
+		if (cpu_state) {
+			if (cpu_state->opp_table)
+				dev_pm_opp_put_opp_table(cpu_state->opp_table);
+			kfree(cpu_state);
+			cpu_state = NULL;
+		}
 	}
-
-	kfree(data->map);
-	data->map = NULL;
 
 	return 0;
 }
@@ -415,7 +399,7 @@ static int devfreq_passive_event_handler(struct devfreq *devfreq,
 	struct notifier_block *nb = &p_data->nb;
 	int ret = 0;
 
-	if (!parent && !p_data->cpufreq_type)
+	if (p_data->parent_type == DEVFREQ_PARENT_DEV && !parent)
 		return -EPROBE_DEFER;
 
 	switch (event) {
@@ -423,21 +407,24 @@ static int devfreq_passive_event_handler(struct devfreq *devfreq,
 		if (!p_data->this)
 			p_data->this = devfreq;
 
-		if (p_data->cpufreq_type) {
-			ret = cpufreq_passive_register(&p_data);
-		} else {
+		if (p_data->parent_type == DEVFREQ_PARENT_DEV) {
 			nb->notifier_call = devfreq_passive_notifier_call;
 			ret = devm_devfreq_register_notifier(dev, parent, nb,
 						DEVFREQ_TRANSITION_NOTIFIER);
+		} else if (p_data->parent_type == CPUFREQ_PARENT_DEV) {
+			ret = cpufreq_passive_register(&p_data);
+		} else {
+			ret = -EINVAL;
 		}
 		break;
 	case DEVFREQ_GOV_STOP:
-		if (p_data->cpufreq_type) {
-			cpufreq_passive_unregister(&p_data);
-		} else {
+		if (p_data->parent_type == DEVFREQ_PARENT_DEV)
 			devm_devfreq_unregister_notifier(dev, parent, nb,
 						DEVFREQ_TRANSITION_NOTIFIER);
-		}
+		else if (p_data->parent_type == CPUFREQ_PARENT_DEV)
+			cpufreq_passive_unregister(&p_data);
+		else
+			ret = -EINVAL;
 		break;
 	default:
 		break;

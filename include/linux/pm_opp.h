@@ -138,9 +138,12 @@ struct opp_table *dev_pm_opp_set_clkname(struct device *dev, const char * name);
 void dev_pm_opp_put_clkname(struct opp_table *opp_table);
 struct opp_table *dev_pm_opp_register_set_opp_helper(struct device *dev, int (*set_opp)(struct dev_pm_set_opp_data *data));
 void dev_pm_opp_unregister_set_opp_helper(struct opp_table *opp_table);
-struct opp_table *dev_pm_opp_set_genpd_virt_dev(struct device *dev, struct device *virt_dev, int index);
-void dev_pm_opp_put_genpd_virt_dev(struct opp_table *opp_table, struct device *virt_dev);
+struct opp_table *dev_pm_opp_attach_genpd(struct device *dev, const char **names);
+void dev_pm_opp_detach_genpd(struct opp_table *opp_table);
 int dev_pm_opp_xlate_performance_state(struct opp_table *src_table, struct opp_table *dst_table, unsigned int pstate);
+struct dev_pm_opp *dev_pm_opp_xlate_opp(struct opp_table *src_table,
+					struct opp_table *dst_table,
+					struct dev_pm_opp *src_opp);
 int dev_pm_opp_set_rate(struct device *dev, unsigned long target_freq);
 int dev_pm_opp_set_sharing_cpus(struct device *cpu_dev, const struct cpumask *cpumask);
 int dev_pm_opp_get_sharing_cpus(struct device *cpu_dev, struct cpumask *cpumask);
@@ -309,16 +312,24 @@ static inline struct opp_table *dev_pm_opp_set_clkname(struct device *dev, const
 
 static inline void dev_pm_opp_put_clkname(struct opp_table *opp_table) {}
 
-static inline struct opp_table *dev_pm_opp_set_genpd_virt_dev(struct device *dev, struct device *virt_dev, int index)
+static inline struct opp_table *dev_pm_opp_attach_genpd(struct device *dev, const char **names)
 {
 	return ERR_PTR(-ENOTSUPP);
 }
 
-static inline void dev_pm_opp_put_genpd_virt_dev(struct opp_table *opp_table, struct device *virt_dev) {}
+static inline void dev_pm_opp_detach_genpd(struct opp_table *opp_table) {}
 
 static inline int dev_pm_opp_xlate_performance_state(struct opp_table *src_table, struct opp_table *dst_table, unsigned int pstate)
 {
 	return -ENOTSUPP;
+}
+
+static inline struct dev_pm_opp *dev_pm_opp_xlate_opp(
+						struct opp_table *src_table,
+						struct opp_table *dst_table,
+						struct dev_pm_opp *src_opp)
+{
+	return NULL;
 }
 
 static inline int dev_pm_opp_set_rate(struct device *dev, unsigned long target_freq)
@@ -355,11 +366,8 @@ void dev_pm_opp_of_cpumask_remove_table(const struct cpumask *cpumask);
 int dev_pm_opp_of_get_sharing_cpus(struct device *cpu_dev, struct cpumask *cpumask);
 struct device_node *dev_pm_opp_of_get_opp_desc_node(struct device *dev);
 struct device_node *dev_pm_opp_get_of_node(struct dev_pm_opp *opp);
-struct device_node *of_parse_required_opp(struct device_node *np, int index);
 int of_get_required_opp_performance_state(struct device_node *np, int index);
 void dev_pm_opp_of_register_em(struct cpumask *cpus);
-struct dev_pm_opp *dev_pm_opp_find_opp_of_np(struct opp_table *opp_table,
-					     struct device_node *opp_np);
 #else
 static inline int dev_pm_opp_of_add_table(struct device *dev)
 {
@@ -389,11 +397,6 @@ static inline int dev_pm_opp_of_get_sharing_cpus(struct device *cpu_dev, struct 
 	return -ENOTSUPP;
 }
 
-static inline struct dev_pm_opp *dev_pm_opp_find_opp_of_np(struct opp_table *opp_table, struct device_node *opp_np)
-{
-	return ERR_PTR(-ENOTSUPP);
-}
-
 static inline struct device_node *dev_pm_opp_of_get_opp_desc_node(struct device *dev)
 {
 	return NULL;
@@ -411,11 +414,6 @@ static inline void dev_pm_opp_of_register_em(struct cpumask *cpus)
 static inline int of_get_required_opp_performance_state(struct device_node *np, int index)
 {
 	return -ENOTSUPP;
-}
-
-static inline struct device_node *of_parse_required_opp(struct device_node *np, int index)
-{
-	return NULL;
 }
 #endif
 
