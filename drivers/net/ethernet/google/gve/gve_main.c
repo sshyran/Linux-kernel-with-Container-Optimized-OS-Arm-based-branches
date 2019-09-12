@@ -86,6 +86,60 @@ static void gve_free_counter_array(struct gve_priv *priv)
 	priv->counter_array = NULL;
 }
 
+void gve_service_task_schedule(struct gve_priv *priv)
+{
+	if (!gve_get_probe_in_progress(priv) &&
+	    !gve_get_reset_in_progress(priv)) {
+		gve_set_do_report_stats(priv);
+		queue_work(priv->gve_wq, &priv->service_task);
+	}
+}
+
+static void gve_service_timer(struct timer_list *t)
+{
+	struct gve_priv *priv = from_timer(priv, t, service_timer);
+
+	mod_timer(&priv->service_timer,
+		  round_jiffies(jiffies +
+		  msecs_to_jiffies(priv->service_timer_period)));
+	gve_service_task_schedule(priv);
+}
+
+static int gve_alloc_stats_report(struct gve_priv *priv)
+{
+	int tx_stats_num, rx_stats_num;
+
+	tx_stats_num = (GVE_TX_STATS_REPORT_NUM + NIC_TX_STATS_REPORT_NUM) *
+		       priv->tx_cfg.num_queues;
+	rx_stats_num = (GVE_RX_STATS_REPORT_NUM + NIC_RX_STATS_REPORT_NUM) *
+		       priv->rx_cfg.num_queues;
+	priv->stats_report_len = sizeof(struct gve_stats_report) +
+				 (tx_stats_num + rx_stats_num) *
+				 sizeof(struct stats);
+	priv->stats_report =
+		dma_alloc_coherent(&priv->pdev->dev, priv->stats_report_len,
+				   &priv->stats_report_bus, GFP_KERNEL);
+	if (!priv->stats_report)
+		return -ENOMEM;
+	/* Set up timer for periodic task */
+	timer_setup(&priv->service_timer, gve_service_timer, 0);
+	priv->service_timer_period = GVE_SERVICE_TIMER_PERIOD;
+	/* Start the service task timer */
+	mod_timer(&priv->service_timer,
+		  round_jiffies(jiffies +
+		  msecs_to_jiffies(priv->service_timer_period)));
+	return 0;
+}
+
+static void gve_free_stats_report(struct gve_priv *priv)
+{
+
+	del_timer_sync(&priv->service_timer);
+	dma_free_coherent(&priv->pdev->dev, priv->stats_report_len,
+			  priv->stats_report, priv->stats_report_bus);
+	priv->stats_report = NULL;
+}
+
 static irqreturn_t gve_mgmnt_intr(int irq, void *arg)
 {
 	struct gve_priv *priv = arg;
@@ -325,6 +379,9 @@ static int gve_setup_device_resources(struct gve_priv *priv)
 	err = gve_alloc_notify_blocks(priv);
 	if (err)
 		goto abort_with_counter;
+	err = gve_alloc_stats_report(priv);
+	if (err)
+		goto abort_with_ntfy_blocks;
 	err = gve_adminq_configure_device_resources(priv,
 						    priv->counter_array_bus,
 						    priv->num_event_counters,
@@ -334,10 +391,18 @@ static int gve_setup_device_resources(struct gve_priv *priv)
 		dev_err(&priv->pdev->dev,
 			"could not setup device_resources: err=%d\n", err);
 		err = -ENXIO;
-		goto abort_with_ntfy_blocks;
+		goto abort_with_stats_report;
 	}
+	err = gve_adminq_report_stats(priv, priv->stats_report_len,
+				      priv->stats_report_bus,
+				      GVE_SERVICE_TIMER_PERIOD);
+	if (err)
+		dev_err(&priv->pdev->dev,
+			"Failed to report stats: err=%d\n", err);
 	gve_set_device_resources_ok(priv);
 	return 0;
+abort_with_stats_report:
+	gve_free_stats_report(priv);
 abort_with_ntfy_blocks:
 	gve_free_notify_blocks(priv);
 abort_with_counter:
@@ -353,6 +418,14 @@ static void gve_teardown_device_resources(struct gve_priv *priv)
 
 	/* Tell device its resources are being freed */
 	if (gve_get_device_resources_ok(priv)) {
+		/* detach the stats report */
+		err = gve_adminq_report_stats(priv, 0, 0x0,
+			GVE_SERVICE_TIMER_PERIOD);
+		if (err) {
+			dev_err(&priv->pdev->dev,
+				"Failed to detach stats report: err=%d\n", err);
+			gve_trigger_reset(priv);
+		}
 		err = gve_adminq_deconfigure_device_resources(priv);
 		if (err) {
 			dev_err(&priv->pdev->dev,
@@ -363,6 +436,7 @@ static void gve_teardown_device_resources(struct gve_priv *priv)
 	}
 	gve_free_counter_array(priv);
 	gve_free_notify_blocks(priv);
+	gve_free_stats_report(priv);
 	gve_clear_device_resources_ok(priv);
 }
 
@@ -586,8 +660,9 @@ static void gve_free_rings(struct gve_priv *priv)
 	}
 }
 
-int gve_alloc_page(struct gve_priv *priv, struct device *dev, struct page **page, dma_addr_t *dma,
-		   enum dma_data_direction dir, gfp_t gfp_flags)
+int gve_alloc_page(struct gve_priv* priv, struct device* dev,
+								struct page **page, dma_addr_t *dma,
+								enum dma_data_direction dir, gfp_t gfp_flags)
 {
 	if (priv->dma_mask == 24)
 		gfp_flags |= GFP_DMA;
@@ -914,6 +989,7 @@ static void gve_turndown(struct gve_priv *priv)
 	netif_tx_disable(priv->dev);
 
 	gve_clear_napi_enabled(priv);
+	gve_clear_report_stats(priv);
 }
 
 static void gve_turnup(struct gve_priv *priv)
@@ -989,6 +1065,10 @@ static void gve_handle_status(struct gve_priv *priv, u32 status)
 		dev_info(&priv->pdev->dev, "Device requested reset.\n");
 		gve_set_do_reset(priv);
 	}
+	if (GVE_DEVICE_STATUS_REPORT_STATS_MASK & status) {
+		dev_info(&priv->pdev->dev, "Device report stats on.\n");
+		gve_set_do_report_stats(priv);
+	}
 }
 
 static void gve_handle_reset(struct gve_priv *priv)
@@ -1007,7 +1087,70 @@ static void gve_handle_reset(struct gve_priv *priv)
 	}
 }
 
-/* Handle NIC status register changes and reset requests */
+void gve_handle_report_stats(struct gve_priv *priv)
+{
+	int idx, stats_idx = 0, tx_bytes;
+	unsigned int start = 0;
+	struct stats *stats = priv->stats_report->stats;
+
+	if (!gve_get_report_stats(priv))
+		return;
+
+	be64_add_cpu(&priv->stats_report->written_count, 1);
+	/* tx stats */
+	if (priv->tx) {
+		for (idx = 0; idx < priv->tx_cfg.num_queues; idx++) {
+			do {
+				start = u64_stats_fetch_begin(&priv->tx[idx].statss);
+				tx_bytes = priv->tx[idx].bytes_done;
+			} while (u64_stats_fetch_retry(&priv->tx[idx].statss, start));
+			stats[stats_idx++] = (struct stats) {
+				.stat_name = cpu_to_be32(TX_WAKE_CNT),
+				.value = cpu_to_be64(priv->tx[idx].wake_queue),
+				.queue_id = cpu_to_be32(idx),
+			};
+			stats[stats_idx++] = (struct stats) {
+				.stat_name = cpu_to_be32(TX_STOP_CNT),
+				.value = cpu_to_be64(priv->tx[idx].stop_queue),
+				.queue_id = cpu_to_be32(idx),
+			};
+			stats[stats_idx++] = (struct stats) {
+				.stat_name = cpu_to_be32(TX_FRAMES_SENT),
+				.value = cpu_to_be64(priv->tx[idx].req),
+				.queue_id = cpu_to_be32(idx),
+			};
+			stats[stats_idx++] = (struct stats) {
+				.stat_name = cpu_to_be32(TX_BYTES_SENT),
+				.value = cpu_to_be64(tx_bytes),
+				.queue_id = cpu_to_be32(idx),
+			};
+			stats[stats_idx++] = (struct stats) {
+				.stat_name = cpu_to_be32(
+					TX_LAST_COMPLETION_PROCESSED),
+				.value = cpu_to_be64(priv->tx[idx].done),
+				.queue_id = cpu_to_be32(idx),
+			};
+		}
+	}
+	/* rx stats */
+	if (priv->rx) {
+		for (idx = 0; idx < priv->rx_cfg.num_queues; idx++) {
+			stats[stats_idx++] = (struct stats) {
+				.stat_name = cpu_to_be32(
+					RX_NEXT_EXPECTED_SEQUENCE),
+				.value = cpu_to_be64(priv->rx[idx].desc.seqno),
+				.queue_id = cpu_to_be32(idx),
+			};
+			stats[stats_idx++] = (struct stats) {
+				.stat_name = cpu_to_be32(RX_BUFFERS_POSTED),
+				.value = cpu_to_be64(priv->rx[0].fill_cnt),
+				.queue_id = cpu_to_be32(idx),
+			};
+		}
+	}
+}
+
+/* Handle NIC status register changes, reset requests and report stats */
 static void gve_service_task(struct work_struct *work)
 {
 	struct gve_priv *priv = container_of(work, struct gve_priv,
@@ -1017,6 +1160,10 @@ static void gve_service_task(struct work_struct *work)
 			  ioread32be(&priv->reg_bar0->device_status));
 
 	gve_handle_reset(priv);
+	if (gve_get_do_report_stats(priv)) {
+		gve_handle_report_stats(priv);
+		gve_clear_do_report_stats(priv);
+	}
 }
 
 static int gve_init_priv(struct gve_priv *priv, bool skip_describe_device)
@@ -1297,6 +1444,7 @@ static int gve_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	priv->db_bar2 = db_bar;
 	priv->service_task_flags = 0x0;
 	priv->state_flags = 0x0;
+	priv->ethtool_flags = 0x0;
 	priv->dma_mask = dma_mask;
 
 	gve_set_probe_in_progress(priv);
