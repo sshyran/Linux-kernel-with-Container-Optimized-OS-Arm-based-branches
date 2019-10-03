@@ -236,6 +236,9 @@ struct gve_priv {
 	struct work_struct service_task;
 	unsigned long service_task_flags;
 	unsigned long state_flags;
+
+	/* Gvnic device's dma mask, set during probe. */
+	u8 dma_mask;
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0))
 	int max_mtu;
 #endif /* LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0) */
@@ -466,7 +469,7 @@ static inline bool gve_can_recycle_pages(struct net_device *dev)
 /* buffers */
 int gve_alloc_page(struct gve_priv *priv, struct device *dev,
 		   struct page **page, dma_addr_t *dma,
-		   enum dma_data_direction);
+		   enum dma_data_direction, gfp_t gfp_flags);
 void gve_free_page(struct device *dev, struct page *page, dma_addr_t dma,
 		   enum dma_data_direction);
 /* tx handling */
