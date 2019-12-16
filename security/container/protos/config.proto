@@ -20,10 +20,16 @@ message ExecuteCollectorConfig {
   repeated string envp_allowlist = 4;
 }
 
+// Collect information about executable memory mappings.
+message MemExecCollectorConfig {
+  bool enabled = 1;
+}
+
 // Convey configuration information to Guest LSM
 message ConfigurationRequest {
   ContainerCollectorConfig container_config = 1;
   ExecuteCollectorConfig execute_config = 2;
+  MemExecCollectorConfig memexec_config = 3;
 
   // Additional configuration messages will be added as new collectors
   // are implemented

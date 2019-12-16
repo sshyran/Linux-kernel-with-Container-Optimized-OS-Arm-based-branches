@@ -6,10 +6,13 @@
  */
 
 #include "monitor.h"
+#include "process.h"
 
 #include <linux/audit.h>
 #include <linux/lsm_hooks.h>
 #include <linux/module.h>
+#include <linux/pipe_fs_i.h>
+#include <linux/rwsem.h>
 #include <linux/string.h>
 #include <linux/sysctl.h>
 #include <linux/socket.h>
@@ -29,6 +32,23 @@ static DECLARE_WAIT_QUEUE_HEAD(config_wait);
 /* increase each time a new configuration is applied. */
 static unsigned long config_version;
 
+/* Stats gathered from the LSM. */
+struct container_stats csm_stats;
+
+struct container_stats_mapping {
+	const char *key;
+	size_t *value;
+};
+
+/* Key value pair mapping for the sysfs entry. */
+struct container_stats_mapping csm_stats_mapping[] = {
+	{ "ProtoEncodingFailed", &csm_stats.proto_encoding_failed },
+	{ "WorkQueueFailed", &csm_stats.workqueue_failed },
+	{ "EventWritingFailed", &csm_stats.event_writing_failed },
+	{ "SizePickingFailed", &csm_stats.size_picking_failed },
+	{ "PipeAlreadyOpened", &csm_stats.pipe_already_opened },
+};
+
 /*
  * Is monitoring enabled? Defaults to disabled.
  * These variables might be used without locking csm_rwsem_config to check if an
@@ -40,6 +60,7 @@ static unsigned long config_version;
 bool csm_enabled;
 static bool csm_container_enabled;
 bool csm_execute_enabled;
+bool csm_memexec_enabled;
 
 /* securityfs control files */
 static struct dentry *csm_dir;
@@ -48,18 +69,23 @@ static struct dentry *csm_container_file;
 static struct dentry *csm_config_file;
 static struct dentry *csm_config_vers_file;
 static struct dentry *csm_pipe_file;
+static struct dentry *csm_stats_file;
 
 /* Pipes to forward data to user-mode. */
+DECLARE_RWSEM(csm_rwsem_pipe);
 static struct file *csm_user_read_pipe;
 struct file *csm_user_write_pipe;
 
 /* Option to disable the CSM features at boot. */
 static bool cmdline_boot_disabled;
-bool cmdline_boot_vsock_disabled;
+bool cmdline_boot_vsock_enabled;
 
 /* Options disabled by default. */
 static bool cmdline_boot_pipe_enabled;
 static bool cmdline_boot_config_enabled;
+
+/* Option to fully enabled the LSM at boot for automated testing. */
+static bool cmdline_default_enabled;
 
 static int csm_boot_disabled_setup(char *str)
 {
@@ -67,12 +93,17 @@ static int csm_boot_disabled_setup(char *str)
 }
 early_param("csm.disabled", csm_boot_disabled_setup);
 
-static int csm_boot_vsock_disabled_setup(char *str)
+static int csm_default_enabled_setup(char *str)
 {
-	return kstrtobool(str, &cmdline_boot_vsock_disabled);
+	return kstrtobool(str, &cmdline_default_enabled);
 }
-early_param("csm.vsock.disabled", csm_boot_vsock_disabled_setup);
+early_param("csm.default.enabled", csm_default_enabled_setup);
 
+static int csm_boot_vsock_enabled_setup(char *str)
+{
+	return kstrtobool(str, &cmdline_boot_vsock_enabled);
+}
+early_param("csm.vsock.enabled", csm_boot_vsock_enabled_setup);
 
 static int csm_boot_pipe_enabled_setup(char *str)
 {
@@ -86,18 +117,63 @@ static int csm_boot_config_enabled_setup(char *str)
 }
 early_param("csm.config.enabled", csm_boot_config_enabled_setup);
 
+static bool pipe_in_use(void)
+{
+	struct pipe_inode_info *pipe;
+
+	lockdep_assert_held_exclusive(&csm_rwsem_config);
+	if (csm_user_read_pipe) {
+		pipe = get_pipe_info(csm_user_read_pipe);
+		if (pipe)
+			return READ_ONCE(pipe->readers) > 1;
+	}
+	return false;
+}
+
+/* Close pipe, force has to be true to close pipe if it is still being used. */
+int close_pipe_files(bool force)
+{
+	if (csm_user_read_pipe) {
+		/* Pipe is still used. */
+		if (pipe_in_use()) {
+			if (!force)
+				return -EBUSY;
+			pr_warn("pipe is closed while it is still being used.\n");
+		}
+
+		fput(csm_user_read_pipe);
+		fput(csm_user_write_pipe);
+		csm_user_read_pipe = NULL;
+		csm_user_write_pipe = NULL;
+	}
+	return 0;
+}
+
 static void csm_update_config(schema_ConfigurationRequest *req)
 {
 	schema_ExecuteCollectorConfig *econf;
+	size_t i;
+	bool enumerate_processes = false;
 
 	/* Expect the lock to be held for write before this call. */
 	lockdep_assert_held_exclusive(&csm_rwsem_config);
 
+	/* This covers the scenario where a client is connected and the config
+	 * transitions the execute collector from disabled to enabled. In that
+	 * case there may have been execute events not sent. So they are
+	 * enumerated.
+	 */
+	if (!csm_execute_enabled && req->execute_config.enabled &&
+	    pipe_in_use())
+		enumerate_processes = true;
+
 	csm_container_enabled = req->container_config.enabled;
 	csm_execute_enabled = req->execute_config.enabled;
+	csm_memexec_enabled = req->memexec_config.enabled;
 
 	/* csm_enabled is true if any collector is enabled. */
-	csm_enabled = csm_container_enabled || csm_execute_enabled;
+	csm_enabled = csm_container_enabled || csm_execute_enabled ||
+		csm_memexec_enabled;
 
 	/* Clean-up existing configurations. */
 	kfree(csm_execute_config.envp_allowlist);
@@ -113,7 +189,17 @@ static void csm_update_config(schema_ConfigurationRequest *req)
 		econf->envp_allowlist.arg = NULL;
 	}
 
+	/* Reset all stats and close pipe if disabled. */
+	if (!csm_enabled) {
+		for (i = 0; i < ARRAY_SIZE(csm_stats_mapping); i++)
+			*csm_stats_mapping[i].value = 0;
+
+		close_pipe_files(true);
+	}
+
 	config_version++;
+	if (enumerate_processes)
+		csm_enumerate_processes();
 	wake_up(&config_wait);
 }
 
@@ -125,8 +211,10 @@ int csm_update_config_from_buffer(void *data, size_t size)
 	c.execute_config.envp_allowlist.funcs.decode = pb_decode_string_array;
 
 	istream = pb_istream_from_buffer(data, size);
-	if (!pb_decode(&istream, schema_ConfigurationRequest_fields, &c))
+	if (!pb_decode(&istream, schema_ConfigurationRequest_fields, &c)) {
+		kfree(c.execute_config.envp_allowlist.arg);
 		return -EINVAL;
+	}
 
 	down_write(&csm_rwsem_config);
 	csm_update_config(&c);
@@ -177,6 +265,7 @@ static void csm_enable(void)
 	req.execute_config.enabled = true;
 	req.execute_config.argv_limit = UINT_MAX;
 	req.execute_config.envp_limit = UINT_MAX;
+	req.memexec_config.enabled = true;
 	csm_update_config(&req);
 }
 
@@ -275,11 +364,62 @@ static int csm_pipe_open(struct inode *inode, struct file *file)
 	return 0;
 }
 
+/* Similar to file_clone_open that is available only in 4.19 and up. */
+static inline struct file *pipe_clone_open(struct file *file)
+{
+	return dentry_open(&file->f_path, file->f_flags, file->f_cred);
+}
+
+/* Check if the pipe is still used, else recreate and dup it. */
+static struct file *csm_dup_pipe(void)
+{
+	long pipe_size = 1024 * PAGE_SIZE;
+	long actual_size;
+	struct file *pipes[2] = {NULL, NULL};
+	struct file *ret;
+	int err;
+
+	down_write(&csm_rwsem_pipe);
+
+	err = close_pipe_files(false);
+	if (err) {
+		ret = ERR_PTR(err);
+		csm_stats.pipe_already_opened++;
+		goto out;
+	}
+
+	err = create_pipe_files(pipes, O_NONBLOCK);
+	if (err) {
+		ret = ERR_PTR(err);
+		goto out;
+	}
+
+	/*
+	 * Try to increase the pipe size to 1024 pages, if there is not
+	 * enough memory, pipes will stay unchanged.
+	 */
+	actual_size = pipe_fcntl(pipes[0], F_SETPIPE_SZ, pipe_size);
+	if (actual_size != pipe_size)
+		pr_err("failed to resize pipe to 1024 pages, error: %ld, fallback to the default value\n",
+		       actual_size);
+
+	csm_user_read_pipe = pipes[0];
+	csm_user_write_pipe = pipes[1];
+
+	/* Clone the file so we can track if the reader is still used. */
+	ret = pipe_clone_open(csm_user_read_pipe);
+
+out:
+	up_write(&csm_rwsem_pipe);
+	return ret;
+}
+
 static ssize_t csm_pipe_read(struct file *file, char __user *buf,
 				       size_t count, loff_t *ppos)
 {
 	int fd;
 	ssize_t err;
+	struct file *local_pipe;
 
 	/* No partial reads. */
 	if (*ppos != 0)
@@ -289,7 +429,12 @@ static ssize_t csm_pipe_read(struct file *file, char __user *buf,
 	if (fd < 0)
 		return fd;
 
-	fd_install(fd, get_file(csm_user_read_pipe));
+	local_pipe = csm_dup_pipe();
+	if (IS_ERR(local_pipe)) {
+		err = PTR_ERR(local_pipe);
+		local_pipe = NULL;
+		goto error;
+	}
 
 	err = simple_read_from_buffer(buf, count, ppos, &fd, sizeof(fd));
 	if (err < 0)
@@ -300,9 +445,16 @@ static ssize_t csm_pipe_read(struct file *file, char __user *buf,
 		goto error;
 	}
 
+	/* Install the file descriptor when we know everything succeeded. */
+	fd_install(fd, local_pipe);
+
+	csm_enumerate_processes();
+
 	return err;
 
 error:
+	if (local_pipe)
+		fput(local_pipe);
 	put_unused_fd(fd);
 	return err;
 }
@@ -434,6 +586,44 @@ static const struct file_operations csm_container_fops = {
 	.write = csm_container_write,
 };
 
+static int csm_show_stats(struct seq_file *p, void *v)
+{
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(csm_stats_mapping); i++) {
+		seq_printf(p, "%s:\t%zu\n",
+			   csm_stats_mapping[i].key,
+			   *csm_stats_mapping[i].value);
+	}
+
+	return 0;
+}
+
+static int csm_stats_open(struct inode *inode, struct file *file)
+{
+	size_t i, size = 1; /* Start at one for the null byte. */
+
+	for (i = 0; i < ARRAY_SIZE(csm_stats_mapping); i++) {
+		/*
+		 * Calculate the maximum length:
+		 * - Length of the key
+		 * - 3 additional chars :\t\n
+		 * - longest unsigned 64-bit integer.
+		 */
+		size += strlen(csm_stats_mapping[i].key)
+			+ 3 + sizeof("18446744073709551615");
+	}
+
+	return single_open_size(file, csm_show_stats, NULL, size);
+}
+
+static const struct file_operations csm_stats_fops = {
+	.open		= csm_stats_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 /* Prevent user-mode from using vsock on our port. */
 static int csm_socket_connect(struct socket *sock, struct sockaddr *address,
 			      int addrlen)
@@ -458,41 +648,53 @@ static int csm_socket_connect(struct socket *sock, struct sockaddr *address,
 	return 0;
 }
 
+static int csm_setxattr(struct dentry *dentry, const char *name,
+			const void *value, size_t size, int flags)
+{
+	if (csm_enabled && !strcmp(name, XATTR_SECURITY_CSM))
+		return -EPERM;
+	return 0;
+}
+
 static struct security_hook_list csm_hooks[] __lsm_ro_after_init = {
+	/* Track process execution. */
 	LSM_HOOK_INIT(bprm_check_security, csm_bprm_check_security),
+	LSM_HOOK_INIT(task_post_alloc, csm_task_post_alloc),
 	LSM_HOOK_INIT(task_exit, csm_task_exit),
+
+	/* Block vsock access when relevant. */
 	LSM_HOOK_INIT(socket_connect, csm_socket_connect),
+
+	/* Track memory execution */
+	LSM_HOOK_INIT(file_mprotect, csm_mprotect),
+	LSM_HOOK_INIT(mmap_file, csm_mmap_file),
+
+	/* Track file modification provenance. */
+	LSM_HOOK_INIT(file_pre_free_security, csm_file_pre_free),
+
+	/* Block modyfing csm xattr. */
+	LSM_HOOK_INIT(inode_setxattr, csm_setxattr),
 };
 
 static int __init csm_init(void)
 {
 	int err;
-	struct file *pipes[2] = {NULL, NULL};
 
 	if (cmdline_boot_disabled)
 		return 0;
 
 	/*
-	 * If cmdline_boot_vsock_disabled is true, only the event pool will be
+	 * If cmdline_boot_vsock_enabled is false, only the event pool will be
 	 * allocated. The destroy function will clean-up only what was reserved.
 	 */
 	err = vsock_initialize();
 	if (err)
 		return err;
 
-	if (cmdline_boot_pipe_enabled) {
-		err = create_pipe_files(pipes, O_NONBLOCK);
-		if (err)
-			goto error;
-
-		csm_user_read_pipe = pipes[0];
-		csm_user_write_pipe = pipes[1];
-	}
-
 	csm_dir = securityfs_create_dir("container_monitor", NULL);
 	if (IS_ERR(csm_dir)) {
 		err = PTR_ERR(csm_dir);
-		goto error_pipe;
+		goto error;
 	}
 
 	csm_enabled_file = securityfs_create_file("enabled", 0644, csm_dir,
@@ -527,7 +729,7 @@ static int __init csm_init(void)
 		}
 	}
 
-	if (csm_user_write_pipe) {
+	if (cmdline_boot_pipe_enabled) {
 		csm_pipe_file = securityfs_create_file("pipe", 0400, csm_dir,
 						       NULL, &csm_pipe_fops);
 		if (IS_ERR(csm_pipe_file)) {
@@ -536,12 +738,30 @@ static int __init csm_init(void)
 		}
 	}
 
+	csm_stats_file = securityfs_create_file("stats", 0400, csm_dir,
+						 NULL, &csm_stats_fops);
+	if (IS_ERR(csm_stats_file)) {
+		err = PTR_ERR(csm_stats_file);
+		goto error_rm_pipe;
+	}
+
 	pr_debug("created securityfs control files\n");
 
 	security_add_hooks(csm_hooks, ARRAY_SIZE(csm_hooks), "csm");
 	pr_debug("registered hooks\n");
+
+	/* Off-by-default, only used for testing images. */
+	if (cmdline_default_enabled) {
+		down_write(&csm_rwsem_config);
+		csm_enable();
+		up_write(&csm_rwsem_config);
+	}
+
 	return 0;
 
+error_rm_pipe:
+	if (cmdline_boot_pipe_enabled)
+		securityfs_remove(csm_pipe_file);
 error_rm_config:
 	if (cmdline_boot_config_enabled)
 		securityfs_remove(csm_config_file);
@@ -553,11 +773,6 @@ error_rm_enabled:
 	securityfs_remove(csm_enabled_file);
 error_rmdir:
 	securityfs_remove(csm_dir);
-error_pipe:
-	if (cmdline_boot_pipe_enabled) {
-		fput(pipes[0]);
-		fput(pipes[1]);
-	}
 error:
 	vsock_destroy();
 	pr_warn("fs initialization error: %d", err);
