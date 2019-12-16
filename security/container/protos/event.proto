@@ -2,15 +2,29 @@ syntax = "proto3";
 
 package schema;
 
+message SocketIp {
+  uint32 family = 1;  // AF_* for socket type.
+  bytes ip = 2;       // ip4 or ip6 address.
+  uint32 port = 3;    // port bind or connected.
+}
+
+message Socket {
+  SocketIp local = 1;
+  SocketIp remote = 2;  // unset if not connected.
+}
+
 message Overlay {
   bool lower_layer = 1;
   bool upper_layer = 2;
+  bytes modified_uuid = 3;  // The process who first modified the file.
 }
 
 message File {
   bytes fullpath = 1;
+  uint32 ino = 3;  // inode number.
   oneof filesystem {
     Overlay overlayfs = 2;
+    Socket socket = 4;
   }
 }
 
@@ -23,6 +37,7 @@ message ProcessArguments {
 
 message Descriptor {
   uint32 mode = 1;  // file mode (stat st_mode)
+  File file = 2;
 }
 
 message Streams {
@@ -32,17 +47,18 @@ message Streams {
 }
 
 message Process {
-  uint64 creation_timestamp = 1;  // In nanoseconds
+  uint64 creation_timestamp = 1;  // Only populated in ExecuteEvent, in ns.
   bytes uuid = 2;
   uint32 pid = 3;
-  File binary = 4;
+  File binary = 4;  // Only populated in ExecuteEvent.
   uint32 parent_pid = 5;
   bytes parent_uuid = 6;
   uint64 container_id = 7;          // unique id of process's container
   uint32 container_pid = 8;         // pid inside the container namespace pid
   uint32 container_parent_pid = 9;  // optional
-  ProcessArguments args = 10;
-  Streams streams = 11;
+  ProcessArguments args = 10;       // Only populated in ExecuteEvent.
+  Streams streams = 11;             // Only populated in ExecuteEvent.
+  uint64 exec_session_id = 12;      // identifier set for kubectl exec sessions.
 }
 
 message Container {
@@ -54,12 +70,53 @@ message Container {
   bytes container_image_uri = 6;
   repeated bytes labels = 7;
   bytes init_uuid = 8;
+  bytes container_image_id = 9;
 }
 
 // A binary being executed.
 // e.g., execve()
 message ExecuteEvent {
   Process proc = 1;
+}
+
+// A process clone is being created. This message means that a cloning operation
+// is being attempted. It may be sent even if fork fails.
+message CloneEvent {
+  Process proc = 1;
+}
+
+// Processes that are enumerated at startup will be sent with this event. There
+// is no distinction from events we would have seen from fork or exec.
+message EnumerateProcessEvent {
+  Process proc = 1;
+}
+
+// Collect information about mmap/mprotect calls with the PROT_EXEC flag set.
+message MemoryExecEvent {
+  Process proc = 1;  // The origin process
+  // The timestamp in ns when the memory was set executable
+  uint64 prot_exec_timestamp = 2;
+  // The prot flags granted by the kernel for the operation
+  uint64 new_flags = 3;
+  // The prot flags requested for the mprotect/mmap operation
+  uint64 req_flags = 4;
+  // The vm_flags prior to the mprotect operation, if relevant
+  uint64 old_vm_flags = 5;
+  // The operational flags for the mmap operation, if relevant
+  uint64 mmap_flags = 6;
+  // Derived from the file struct describing the fd being mapped
+  File mapped_file = 7;
+  enum Action {
+    UNDEFINED = 0;
+    MPROTECT = 1;
+    MMAP_FILE = 2;
+  }
+  Action action = 8;
+
+  uint64 start_addr = 9;  // The executable memory region start addr
+  uint64 end_addr = 10;   // The executable memory region end addr
+  // True if this event is a mmap of the process' binary
+  bool is_initial_mmap = 11;
 }
 
 // Associate the following container information with all processes
@@ -73,12 +130,18 @@ message ExitEvent {
   bytes process_uuid = 1;
 }
 
+// Next ID: 8
 message Event {
   oneof event {
     ExecuteEvent execute = 1;
     ContainerInfoEvent container = 2;
     ExitEvent exit = 3;
+    MemoryExecEvent memexec = 4;
+    CloneEvent clone = 5;
+    EnumerateProcessEvent enumproc = 7;
   }
+
+  uint64 timestamp = 6;  // In nanoseconds
 }
 
 // Message sent by the daemonset to the LSM for container enlightenment.

@@ -8,6 +8,9 @@
 #include "monitor.h"
 
 #include <linux/string.h>
+#include <net/sock.h>
+#include <net/tcp.h>
+#include <net/ipv6.h>
 
 bool pb_encode_string_field(pb_ostream_t *stream, const pb_field_t *field,
 			    void * const *arg)
@@ -136,17 +139,37 @@ bool pb_decode_string_array(pb_istream_t *stream, const pb_field_t *field,
 	return true;
 }
 
-bool pb_encode_uuid_field(pb_ostream_t *stream, const pb_field_t *field,
-			  void * const *arg)
+bool pb_encode_fixed_string(pb_ostream_t *stream, const pb_field_t *field,
+			    const uint8_t *data, size_t length)
 {
-	const uint8_t *uuid = (const uint8_t *)*arg;
-
-	/* If the uuid is not set, skip this string. */
-	if (!uuid)
+	/* If the data is not set, skip this string. */
+	if (!data)
 		return true;
 
 	if (!pb_encode_tag_for_field(stream, field))
 		return false;
 
-	return pb_encode_string(stream, uuid, PROCESS_UUID_SIZE);
+	return pb_encode_string(stream, data, length);
+}
+
+
+bool pb_encode_uuid_field(pb_ostream_t *stream, const pb_field_t *field,
+			  void * const *arg)
+{
+	return pb_encode_fixed_string(stream, field, (const uint8_t *)*arg,
+				      PROCESS_UUID_SIZE);
+}
+
+bool pb_encode_ip4(pb_ostream_t *stream, const pb_field_t *field,
+		   void * const *arg)
+{
+	return pb_encode_fixed_string(stream, field, (const uint8_t *)*arg,
+				      sizeof(struct in_addr));
+}
+
+bool pb_encode_ip6(pb_ostream_t *stream, const pb_field_t *field,
+		   void * const *arg)
+{
+	return pb_encode_fixed_string(stream, field, (const uint8_t *)*arg,
+				      sizeof(struct in6_addr));
 }

@@ -1,7 +1,9 @@
 config SECURITY_CONTAINER_MONITOR
 	bool "Monitor containerized processes"
 	depends on SECURITY
+	depends on MMU
 	depends on VSOCKETS=y
+	depends on X86_64
 	select SECURITYFS
 	help
 	  Instrument the Linux kernel to collect more information about containers

@@ -10,7 +10,6 @@
 #include <net/net_namespace.h>
 #include <net/vsock_addr.h>
 #include <net/sock.h>
-#include <linux/mempool.h>
 #include <linux/socket.h>
 #include <linux/workqueue.h>
 #include <linux/jiffies.h>
@@ -19,6 +18,7 @@
 #include <linux/kthread.h>
 #include <linux/printk.h>
 #include <linux/delay.h>
+#include <linux/timekeeping.h>
 
 /*
  * virtio vsocket over which to send events to the host.
@@ -42,14 +42,18 @@ static struct socket *csm_vsocket;
 static void csm_heartbeat(struct work_struct *work);
 static DECLARE_DELAYED_WORK(csm_heartbeat_work, csm_heartbeat);
 
+/* csm protobuf work */
+static void csm_sendmsg_pipe_handler(struct work_struct *work);
+
+/* csm message work container*/
+struct msg_work_data {
+	struct work_struct msg_work;
+	size_t pos_bytes_written;
+	char msg[];
+};
+
 /* size used for the config error message. */
 #define CSM_ERROR_BUF_SIZE 40
-
-/* Size of each event entry in the mempool */
-static size_t event_pool_size = PAGE_SIZE;
-
-/* Memory pool for fast memory access on event creation */
-static mempool_t *event_pool;
 
 /* Running thread to manage vsock connections. */
 static struct task_struct *socket_thread;
@@ -105,7 +109,7 @@ static int csm_vsock_sendmsg(struct kvec *vecs, size_t vecs_size,
 	struct msghdr msg = { };
 	int res = -EPIPE;
 
-	if (cmdline_boot_vsock_disabled)
+	if (!cmdline_boot_vsock_enabled)
 		return 0;
 
 	down_read(&csm_rwsem_vsocket);
@@ -123,12 +127,30 @@ static int csm_vsock_sendmsg(struct kvec *vecs, size_t vecs_size,
 static ssize_t csm_user_pipe_write(struct kvec *vecs, size_t vecs_size,
 				   size_t total_length)
 {
-	ssize_t perr;
+	ssize_t perr = 0;
 	struct iov_iter io = { };
 	loff_t pos = 0;
+	struct pipe_inode_info *pipe;
+	unsigned int readers;
 
 	if (!csm_user_write_pipe)
 		return 0;
+
+	down_read(&csm_rwsem_pipe);
+
+	if (csm_user_write_pipe == NULL)
+		goto end;
+
+	/* The pipe info is the same for reader and write files. */
+	pipe = get_pipe_info(csm_user_write_pipe);
+
+	/* If nobody is listening, don't write events. */
+	readers = READ_ONCE(pipe->readers);
+	if (readers <= 1) {
+		WARN_ON(readers == 0);
+		goto end;
+	}
+
 
 	iov_iter_kvec(&io, ITER_KVEC|WRITE, vecs, vecs_size,
 		      total_length);
@@ -137,6 +159,8 @@ static ssize_t csm_user_pipe_write(struct kvec *vecs, size_t vecs_size,
 	perr = vfs_iter_write(csm_user_write_pipe, &io, &pos, 0);
 	file_end_write(csm_user_write_pipe);
 
+end:
+	up_read(&csm_rwsem_pipe);
 	return perr;
 }
 
@@ -172,91 +196,141 @@ static int csm_sendmsg(int type, const void *buf, size_t len)
 				    type, le32_to_cpu(hdr.msg_length), perr);
 	}
 
+	/* If one of them failed, increase the stats once. */
+	if (res < 0 || perr < 0)
+		csm_stats.event_writing_failed++;
+
 	return res;
 }
 
-/*
- * Allocate an event using the best available allocator.
- * The context argument is set for tracking the pool used.
- */
-static void *event_alloc(size_t size, mempool_t **context)
+static bool csm_get_expected_size(size_t *size, const pb_field_t fields[],
+				    const void *src_struct)
 {
-	if (!context)
-		return NULL;
+	schema_Event *event;
 
-	*context = NULL;
+	if (fields != schema_Event_fields)
+		goto other;
 
-	if (size > event_pool_size)
-		return kmalloc(size, GFP_KERNEL);
+	/* Size above 99% of the 100 containers tested running k8s. */
+	event = (schema_Event *)src_struct;
+	switch (event->which_event) {
+	case schema_Event_execute_tag:
+		*size = 3344;
+		return true;
+	case schema_Event_memexec_tag:
+		*size = 176;
+		return true;
+	case schema_Event_clone_tag:
+		*size = 50;
+		return true;
+	case schema_Event_exit_tag:
+		*size = 30;
+		return true;
+	}
 
-	*context = event_pool;
-	return mempool_alloc(event_pool, GFP_KERNEL);
+other:
+	/* If unknown, do the pre-computation. */
+	return pb_get_encoded_size(size, fields, src_struct);
 }
 
-static void event_free(void *ptr, mempool_t *context)
+static struct msg_work_data *csm_encodeproto(size_t size,
+					     const pb_field_t fields[],
+					     const void *src_struct)
 {
-	if (context)
-		mempool_free(ptr, context);
-	else
-		kfree(ptr);
+	pb_ostream_t pos;
+	struct msg_work_data *wd;
+	size_t total;
+
+	total = size + sizeof(*wd);
+	if (total < size)
+		return ERR_PTR(-EINVAL);
+
+	wd = kmalloc(total, GFP_KERNEL);
+	if (!wd)
+		return ERR_PTR(-ENOMEM);
+
+	pos = pb_ostream_from_buffer(wd->msg, size);
+	if (!pb_encode(&pos, fields, src_struct)) {
+		kfree(wd);
+		return ERR_PTR(-EINVAL);
+	}
+
+	INIT_WORK(&wd->msg_work, csm_sendmsg_pipe_handler);
+	wd->pos_bytes_written = pos.bytes_written;
+	return wd;
 }
 
 static int csm_sendproto(int type, const pb_field_t fields[],
 			 const void *src_struct)
 {
 	int err = 0;
-	char *msg;
-	mempool_t *ctx;
-	pb_ostream_t pos;
-	size_t size;
+	size_t size, previous_size;
+	struct msg_work_data *wd;
 
-	if (!pb_get_encoded_size(&size, fields, src_struct))
+	/* Use the expected size first. */
+	if (!csm_get_expected_size(&size, fields, src_struct))
 		return -EINVAL;
 
-	msg = event_alloc(size, &ctx);
-	if (!msg)
-		return -ENOMEM;
+	wd = csm_encodeproto(size, fields, src_struct);
+	if (unlikely(IS_ERR(wd))) {
+		/* If it failed, retry with the exact size. */
+		csm_stats.size_picking_failed++;
+		previous_size = size;
 
-	pos = pb_ostream_from_buffer(msg, size);
-	if (!pb_encode(&pos, fields, src_struct)) {
-		err = -EINVAL;
-		goto out_free;
+		if (!pb_get_encoded_size(&size, fields, src_struct))
+			return -EINVAL;
+
+		wd = csm_encodeproto(size, fields, src_struct);
+		if (IS_ERR(wd)) {
+			csm_stats.proto_encoding_failed++;
+			return PTR_ERR(wd);
+		}
+
+		pr_debug("size picking failed %lu vs %lu\n", previous_size,
+			 size);
 	}
 
-	/*
-	 * Nanopb doesn't support dumping protobuf to string. Instead, hexdump
-	 * the serialized buffer so test code can unmarshal it.
-	 *
-	 * A mutex is used to ensure protobufs dumps are not racing each others.
-	 * The testing code will grep the prefix and parse the result so racing
-	 * other logs is okay but racing other protobuf dumps will create
-	 * problems for testing output.
-	 */
-	if (IS_ENABLED(CONFIG_SECURITY_CONTAINER_MONITOR_DEBUG)) {
-		mutex_lock(&protodump);
-		print_hex_dump_debug("crst-protobuf ", DUMP_PREFIX_OFFSET, 16,
-				     1, msg, pos.bytes_written, true);
-		mutex_unlock(&protodump);
-	}
+	/* The work handler takes care of cleanup, if successfully scheduled. */
+	if (likely(schedule_work(&wd->msg_work)))
+		return 0;
 
-	err = csm_sendmsg(type, msg, pos.bytes_written);
-out_free:
-	event_free(msg, ctx);
+	csm_stats.workqueue_failed++;
+	pr_err_ratelimited("Sent msg to workqueue unsuccessfully (assume dropped).\n");
+
+	kfree(wd);
 	return err;
 }
 
-int csm_sendeventproto(const pb_field_t fields[], const void *src_struct)
+static void csm_sendmsg_pipe_handler(struct work_struct *work)
+{
+	int err;
+	int type = CSM_MSG_EVENT_PROTO;
+	struct msg_work_data *wd = container_of(work, struct msg_work_data,
+						msg_work);
+
+	err = csm_sendmsg(type, wd->msg, wd->pos_bytes_written);
+	if (err)
+		pr_err_ratelimited("csm_sendmsg failed in work handler %s\n",
+				   __func__);
+
+	kfree(wd);
+}
+
+int csm_sendeventproto(const pb_field_t fields[], schema_Event *event)
 {
 	/* Last check before generating and sending an event. */
 	if (!csm_enabled)
 		return -ENOTSUPP;
 
-	return csm_sendproto(CSM_MSG_EVENT_PROTO, fields, src_struct);
+	event->timestamp = ktime_get_real_ns();
+
+	return csm_sendproto(CSM_MSG_EVENT_PROTO, fields, event);
 }
 
-int csm_sendconfigrespproto(const pb_field_t fields[], const void *src_struct)
+int csm_sendconfigrespproto(const pb_field_t fields[],
+			    schema_ConfigurationResponse *resp)
 {
-	return csm_sendproto(CSM_MSG_CONFIG_RESPONSE_PROTO, fields, src_struct);
+	return csm_sendproto(CSM_MSG_CONFIG_RESPONSE_PROTO, fields, resp);
 }
 
 static void csm_heartbeat(struct work_struct *work)
@@ -467,27 +541,13 @@ void __init vsock_destroy(void)
 		kthread_stop(socket_thread);
 		socket_thread = NULL;
 	}
-
-	mempool_destroy(event_pool);
-	event_pool = NULL;
 }
 
 int __init vsock_initialize(void)
 {
 	struct task_struct *task;
 
-	/*
-	 * Eventually should increase the mempool entities and reduce the
-	 * expected size for all events. The current settings should work while
-	 * the protobufs are still being defined.
-	 */
-	event_pool = mempool_create_kmalloc_pool(NR_CPUS, event_pool_size);
-	if (!event_pool) {
-		pr_err("failed to allocate event memory pool\n");
-		return -ENOMEM;
-	}
-
-	if (!cmdline_boot_vsock_disabled) {
+	if (cmdline_boot_vsock_enabled) {
 		task = kthread_run(socket_thread_fn, NULL, "csm-vsock-thread");
 		if (IS_ERR(task)) {
 			pr_err("failed to create socket thread: %ld\n", PTR_ERR(task));
