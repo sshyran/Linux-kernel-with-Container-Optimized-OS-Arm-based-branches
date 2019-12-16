@@ -796,8 +796,6 @@ void __noreturn do_exit(long code)
 	 */
 	set_fs(USER_DS);
 
-	security_task_exit(tsk);
-
 	ptrace_event(PTRACE_EVENT_EXIT, code);
 
 	validate_creds_for_do_exit(tsk);
@@ -854,6 +852,8 @@ void __noreturn do_exit(long code)
 #endif
 		if (tsk->mm)
 			setmax_mm_hiwater_rss(&tsk->signal->maxrss, tsk->mm);
+
+		security_task_exit(tsk);
 	}
 	acct_collect(code, group_dead);
 	if (group_dead)
