@@ -252,6 +252,9 @@ struct gve_priv {
 	unsigned long service_timer_period;
 	struct timer_list service_timer;
 
+	/* Gvnic device link speed from hypervisor. */
+	u64 link_speed;
+
   /* Gvnic device's dma mask, set during probe. */
   u8 dma_mask;
 };
