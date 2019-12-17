@@ -259,6 +259,9 @@ struct gve_priv {
 
 	/* Gvnic device's dma mask, set during probe. */
 	u8 dma_mask;
+
+	/* Gvnic device link speed from hypervisor. */
+	u64 link_speed;
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0))
 	int max_mtu;
 #endif /* LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0) */
