@@ -537,6 +537,10 @@
  *	@clone_flags contains the flags indicating what should be shared.
  *	Handle allocation of task-related resources.
  *	Returns a zero on success, negative values on failure.
+ * @task_post_alloc:
+ *	@task task being allocated.
+ *	Handle allocation of task-related resources after all task fields are
+ *	filled in.
  * @task_free:
  *	@task task about to be freed.
  *	Handle release of task-related resources. (Note that this can be called
@@ -1586,6 +1590,7 @@ union security_list_options {
 	int (*file_open)(struct file *file);
 
 	int (*task_alloc)(struct task_struct *task, unsigned long clone_flags);
+	void (*task_post_alloc)(struct task_struct *task); // Do not upstream.
 	void (*task_free)(struct task_struct *task);
 	int (*cred_alloc_blank)(struct cred *cred, gfp_t gfp);
 	void (*cred_free)(struct cred *cred);
@@ -1881,6 +1886,7 @@ struct security_hook_heads {
 	struct hlist_head file_receive;
 	struct hlist_head file_open;
 	struct hlist_head task_alloc;
+	struct hlist_head task_post_alloc;
 	struct hlist_head task_free;
 	struct hlist_head cred_alloc_blank;
 	struct hlist_head cred_free;
