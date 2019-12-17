@@ -982,6 +982,11 @@ int security_task_alloc(struct task_struct *task, unsigned long clone_flags)
 	return call_int_hook(task_alloc, 0, task, clone_flags);
 }
 
+void security_task_post_alloc(struct task_struct *task)
+{
+	call_void_hook(task_post_alloc, task);
+}
+
 void security_task_free(struct task_struct *task)
 {
 	call_void_hook(task_free, task);

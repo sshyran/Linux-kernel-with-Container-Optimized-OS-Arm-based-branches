@@ -1959,6 +1959,8 @@ static __latent_entropy struct task_struct *copy_process(
 	trace_task_newtask(p, clone_flags);
 	uprobe_copy_process(p, clone_flags);
 
+	security_task_post_alloc(p);
+
 	return p;
 
 bad_fork_cancel_cgroup:
