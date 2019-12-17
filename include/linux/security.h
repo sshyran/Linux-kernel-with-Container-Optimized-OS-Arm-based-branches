@@ -321,6 +321,7 @@ int security_inode_copy_up_xattr(const char *name);
 int security_file_permission(struct file *file, int mask);
 int security_file_alloc(struct file *file);
 void security_file_free(struct file *file);
+void security_file_pre_free(struct file *file);
 int security_file_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 int security_mmap_file(struct file *file, unsigned long prot,
 			unsigned long flags);
@@ -827,6 +828,9 @@ static inline int security_file_alloc(struct file *file)
 }
 
 static inline void security_file_free(struct file *file)
+{ }
+
+static inline void security_file_pre_free(struct file *file)
 { }
 
 static inline int security_file_ioctl(struct file *file, unsigned int cmd,

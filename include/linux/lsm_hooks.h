@@ -457,6 +457,10 @@
  * @file_free_security:
  *	Deallocate and free any security structures stored in file->f_security.
  *	@file contains the file structure being modified.
+ * @file_pre_free_security:
+ *	Perform any logging or LSM state updates for a file being deleted
+ *	using fields of the file before they have been cleared.
+ *	@file contains the file structure being freed
  * @file_ioctl:
  *	@file contains the file structure.
  *	@cmd contains the operation to perform.
@@ -1564,6 +1568,7 @@ union security_list_options {
 	int (*file_permission)(struct file *file, int mask);
 	int (*file_alloc_security)(struct file *file);
 	void (*file_free_security)(struct file *file);
+	void (*file_pre_free_security)(struct file *file);
 	int (*file_ioctl)(struct file *file, unsigned int cmd,
 				unsigned long arg);
 	int (*mmap_addr)(unsigned long addr);
@@ -1864,6 +1869,7 @@ struct security_hook_heads {
 	struct hlist_head file_permission;
 	struct hlist_head file_alloc_security;
 	struct hlist_head file_free_security;
+	struct hlist_head file_pre_free_security;
 	struct hlist_head file_ioctl;
 	struct hlist_head mmap_addr;
 	struct hlist_head mmap_file;
