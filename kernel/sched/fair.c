@@ -4916,7 +4916,7 @@ static enum hrtimer_restart sched_cfs_period_timer(struct hrtimer *timer)
 			u64 new, old = ktime_to_ns(cfs_b->period);
 
 			/*
-			 * Grow period by a factor of 2 to avoid lossing precision.
+			 * Grow period by a factor of 2 to avoid losing precision.
 			 * Precision loss in the quota/period ratio can cause __cfs_schedulable
 			 * to fail.
 			 */
@@ -4926,13 +4926,13 @@ static enum hrtimer_restart sched_cfs_period_timer(struct hrtimer *timer)
 				cfs_b->quota *= 2;
 
 				pr_warn_ratelimited(
-	"cfs_period_timer[cpu%d]: period too short, scaling up (new cfs_period_us %lld, cfs_quota_us = %lld)\n",
+	"cfs_period_timer[cpu%d]: period too short, scaling up (new cfs_period_us = %lld, cfs_quota_us = %lld)\n",
 					smp_processor_id(),
 					div_u64(new, NSEC_PER_USEC),
 					div_u64(cfs_b->quota, NSEC_PER_USEC));
 			} else {
 				pr_warn_ratelimited(
-	"cfs_period_timer[cpu%d]: period too short, but cannot scale up without losing precision (cfs_period_us %lld, cfs_quota_us = %lld)\n",
+	"cfs_period_timer[cpu%d]: period too short, but cannot scale up without losing precision (cfs_period_us = %lld, cfs_quota_us = %lld)\n",
 					smp_processor_id(),
 					div_u64(old, NSEC_PER_USEC),
 					div_u64(cfs_b->quota, NSEC_PER_USEC));
