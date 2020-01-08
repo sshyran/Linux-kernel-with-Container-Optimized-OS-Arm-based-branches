@@ -343,11 +343,14 @@ int gve_adminq_create_rx_queues(struct gve_priv *priv, u32 num_queues)
 {
 	union gve_adminq_command cmd;
 	struct gve_rx_ring *rx;
+	u32 qpl_id;
 	int err;
 	int i;
 
 	for (i = 0; i < num_queues; i++) {
 		rx = &priv->rx[i];
+		qpl_id = priv->raw_addressing ? GVE_RAW_ADDRESSING_QPL_ID :
+			 rx->data.qpl->id;
 		memset(&cmd, 0, sizeof(cmd));
 		cmd.opcode = cpu_to_be32(GVE_ADMINQ_CREATE_RX_QUEUE);
 		cmd.create_rx_queue = (struct gve_adminq_create_rx_queue) {
@@ -358,7 +361,7 @@ int gve_adminq_create_rx_queues(struct gve_priv *priv, u32 num_queues)
 			.queue_resources_addr = cpu_to_be64(rx->q_resources_bus),
 			.rx_desc_ring_addr = cpu_to_be64(rx->desc.bus),
 			.rx_data_ring_addr = cpu_to_be64(rx->data.data_bus),
-			.queue_page_list_id = cpu_to_be32(rx->data.qpl->id),
+			.queue_page_list_id = cpu_to_be32(qpl_id),
 		};
 		err = gve_adminq_issue_cmd(priv, &cmd);
 		if (err)
