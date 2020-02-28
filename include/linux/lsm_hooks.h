@@ -457,6 +457,10 @@
  * @file_free_security:
  *	Deallocate and free any security structures stored in file->f_security.
  *	@file contains the file structure being modified.
+ * @file_pre_free_security:
+ *	Perform any logging or LSM state updates for a file being deleted
+ *	using fields of the file before they have been cleared.
+ *	@file contains the file structure being freed
  * @file_ioctl:
  *	@file contains the file structure.
  *	@cmd contains the operation to perform.
@@ -533,6 +537,10 @@
  *	@clone_flags contains the flags indicating what should be shared.
  *	Handle allocation of task-related resources.
  *	Returns a zero on success, negative values on failure.
+ * @task_post_alloc:
+ *	@task task being allocated.
+ *	Handle allocation of task-related resources after all task fields are
+ *	filled in.
  * @task_free:
  *	@task task about to be freed.
  *	Handle release of task-related resources. (Note that this can be called
@@ -683,6 +691,9 @@
  *	@cred contains the cred of the process where the signal originated, or
  *	NULL if the current task is the originator.
  *	Return 0 if permission is granted.
+ * @task_exit:
+ *      Called early when a task is exiting before all state is lost.
+ *      @p contains the task_struct for process.
  * @task_prctl:
  *	Check permission before performing a process control operation on the
  *	current process.
@@ -1561,6 +1572,7 @@ union security_list_options {
 	int (*file_permission)(struct file *file, int mask);
 	int (*file_alloc_security)(struct file *file);
 	void (*file_free_security)(struct file *file);
+	void (*file_pre_free_security)(struct file *file);
 	int (*file_ioctl)(struct file *file, unsigned int cmd,
 				unsigned long arg);
 	int (*mmap_addr)(unsigned long addr);
@@ -1578,6 +1590,7 @@ union security_list_options {
 	int (*file_open)(struct file *file);
 
 	int (*task_alloc)(struct task_struct *task, unsigned long clone_flags);
+	void (*task_post_alloc)(struct task_struct *task); // Do not upstream.
 	void (*task_free)(struct task_struct *task);
 	int (*cred_alloc_blank)(struct cred *cred, gfp_t gfp);
 	void (*cred_free)(struct cred *cred);
@@ -1610,6 +1623,7 @@ union security_list_options {
 	int (*task_movememory)(struct task_struct *p);
 	int (*task_kill)(struct task_struct *p, struct siginfo *info,
 				int sig, const struct cred *cred);
+	void (*task_exit)(struct task_struct *p);
 	int (*task_prctl)(int option, unsigned long arg2, unsigned long arg3,
 				unsigned long arg4, unsigned long arg5);
 	void (*task_to_inode)(struct task_struct *p, struct inode *inode);
@@ -1860,6 +1874,7 @@ struct security_hook_heads {
 	struct hlist_head file_permission;
 	struct hlist_head file_alloc_security;
 	struct hlist_head file_free_security;
+	struct hlist_head file_pre_free_security;
 	struct hlist_head file_ioctl;
 	struct hlist_head mmap_addr;
 	struct hlist_head mmap_file;
@@ -1871,6 +1886,7 @@ struct security_hook_heads {
 	struct hlist_head file_receive;
 	struct hlist_head file_open;
 	struct hlist_head task_alloc;
+	struct hlist_head task_post_alloc;
 	struct hlist_head task_free;
 	struct hlist_head cred_alloc_blank;
 	struct hlist_head cred_free;
@@ -1897,6 +1913,7 @@ struct security_hook_heads {
 	struct hlist_head task_getscheduler;
 	struct hlist_head task_movememory;
 	struct hlist_head task_kill;
+	struct hlist_head task_exit;
 	struct hlist_head task_prctl;
 	struct hlist_head task_to_inode;
 	struct hlist_head ipc_permission;
