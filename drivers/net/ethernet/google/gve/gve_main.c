@@ -1220,7 +1220,7 @@ if (priv->dev->max_mtu > PAGE_SIZE)
 #endif /* LINUX_VERSION_CODE < KERNEL_VERSION(4,10,0) */
 				err = gve_adminq_set_mtu(priv, priv->dev->mtu);
 				if (err) {
-					netif_err(priv, drv, priv->dev, "Could not set mtu");
+					dev_err(&priv->pdev->dev, "Could not set mtu");
 					goto err;
 				}
 			}
@@ -1264,10 +1264,10 @@ if (priv->dev->max_mtu > PAGE_SIZE)
 						priv->rx_cfg.num_queues);
 	}
 
-	netif_info(priv, drv, priv->dev, "TX queues %d, RX queues %d\n",
-		   priv->tx_cfg.num_queues, priv->rx_cfg.num_queues);
-	netif_info(priv, drv, priv->dev, "Max TX queues %d, Max RX queues %d\n",
-		   priv->tx_cfg.max_queues, priv->rx_cfg.max_queues);
+	dev_info(&priv->pdev->dev, "TX queues %d, RX queues %d\n",
+		 priv->tx_cfg.num_queues, priv->rx_cfg.num_queues);
+	dev_info(&priv->pdev->dev, "Max TX queues %d, Max RX queues %d\n",
+		 priv->tx_cfg.max_queues, priv->rx_cfg.max_queues);
 
 setup_device:
 	err = gve_setup_device_resources(priv);
@@ -1467,21 +1467,21 @@ static int gve_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	gve_set_probe_in_progress(priv);
 
-	err = register_netdev(dev);
-	if (err)
-		goto abort_with_netdev;
-
 	priv->gve_wq = alloc_ordered_workqueue("gve", 0);
 	if (!priv->gve_wq) {
 		dev_err(&pdev->dev, "Could not allocate workqueue");
 		err = -ENOMEM;
-		goto abort_while_registered;
+		goto abort_with_netdev;
 	}
 	INIT_WORK(&priv->service_task, gve_service_task);
 	priv->tx_cfg.max_queues = max_tx_queues;
 	priv->rx_cfg.max_queues = max_rx_queues;
 
 	err = gve_init_priv(priv, false);
+	if (err)
+		goto abort_with_wq;
+
+	err = register_netdev(dev);
 	if (err)
 		goto abort_with_wq;
 
@@ -1493,9 +1493,6 @@ static int gve_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 abort_with_wq:
 	destroy_workqueue(priv->gve_wq);
-
-abort_while_registered:
-	unregister_netdev(dev);
 
 abort_with_netdev:
 	free_netdev(dev);
