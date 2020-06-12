@@ -357,6 +357,7 @@ int security_kernfs_init_security(struct kernfs_node *kn_dir,
 int security_file_permission(struct file *file, int mask);
 int security_file_alloc(struct file *file);
 void security_file_free(struct file *file);
+void security_file_pre_free(struct file *file);
 int security_file_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 int security_mmap_file(struct file *file, unsigned long prot,
 			unsigned long flags);
@@ -371,6 +372,7 @@ int security_file_send_sigiotask(struct task_struct *tsk,
 int security_file_receive(struct file *file);
 int security_file_open(struct file *file);
 int security_task_alloc(struct task_struct *task, unsigned long clone_flags);
+void security_task_post_alloc(struct task_struct *task);
 void security_task_free(struct task_struct *task);
 int security_cred_alloc_blank(struct cred *cred, gfp_t gfp);
 void security_cred_free(struct cred *cred);
@@ -402,6 +404,7 @@ int security_task_getscheduler(struct task_struct *p);
 int security_task_movememory(struct task_struct *p);
 int security_task_kill(struct task_struct *p, struct kernel_siginfo *info,
 			int sig, const struct cred *cred);
+void security_task_exit(struct task_struct *p);
 int security_task_prctl(int option, unsigned long arg2, unsigned long arg3,
 			unsigned long arg4, unsigned long arg5);
 void security_task_to_inode(struct task_struct *p, struct inode *inode);
@@ -897,6 +900,9 @@ static inline int security_file_alloc(struct file *file)
 static inline void security_file_free(struct file *file)
 { }
 
+static inline void security_file_pre_free(struct file *file)
+{ }
+
 static inline int security_file_ioctl(struct file *file, unsigned int cmd,
 				      unsigned long arg)
 {
@@ -959,6 +965,9 @@ static inline int security_task_alloc(struct task_struct *task,
 {
 	return 0;
 }
+
+static inline void security_task_post_alloc(struct task_struct *task)
+{ }
 
 static inline void security_task_free(struct task_struct *task)
 { }
@@ -1094,6 +1103,9 @@ static inline int security_task_kill(struct task_struct *p,
 {
 	return 0;
 }
+
+static inline void security_task_exit(struct task_struct *p)
+{ }
 
 static inline int security_task_prctl(int option, unsigned long arg2,
 				      unsigned long arg3,
@@ -1896,4 +1908,3 @@ static inline void security_bpf_prog_free(struct bpf_prog_aux *aux)
 #endif /* CONFIG_BPF_SYSCALL */
 
 #endif /* ! __LINUX_SECURITY_H */
-
