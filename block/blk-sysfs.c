@@ -529,6 +529,33 @@ static ssize_t queue_dax_show(struct request_queue *q, char *page)
 	return queue_var_show(blk_queue_dax(q), page);
 }
 
+static ssize_t queue_split_alignment_show(struct request_queue *q, char *page)
+{
+	return queue_var_show((q->split_alignment << 9), page);
+}
+
+static ssize_t queue_split_alignment_store(struct request_queue *q, const char *page,
+						size_t count)
+{
+	unsigned long split_alignment;
+	int ret;
+
+	ret = queue_var_store(&split_alignment, page, count);
+	if (ret < 0)
+		return ret;
+
+	/* split_alignment can only be a power of 2 */
+	if (split_alignment & (split_alignment - 1))
+		return -EINVAL;
+
+	/* ..and it should be greater than 512 */
+	if (!(split_alignment >> 9))
+		return -EINVAL;
+
+	q->split_alignment = split_alignment >> 9;
+	return count;
+}
+
 static struct queue_sysfs_entry queue_requests_entry = {
 	.attr = {.name = "nr_requests", .mode = 0644 },
 	.show = queue_requests_show,
@@ -727,6 +754,12 @@ static struct queue_sysfs_entry throtl_sample_time_entry = {
 };
 #endif
 
+static struct queue_sysfs_entry queue_split_alignment = {
+	.attr = {.name = "split_alignment", .mode = 0644 },
+	.show = queue_split_alignment_show,
+	.store = queue_split_alignment_store,
+};
+
 static struct attribute *queue_attrs[] = {
 	&queue_requests_entry.attr,
 	&queue_ra_entry.attr,
@@ -766,6 +799,7 @@ static struct attribute *queue_attrs[] = {
 #ifdef CONFIG_BLK_DEV_THROTTLING_LOW
 	&throtl_sample_time_entry.attr,
 #endif
+	&queue_split_alignment.attr,
 	NULL,
 };
 
