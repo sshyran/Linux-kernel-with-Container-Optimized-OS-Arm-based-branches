@@ -342,8 +342,7 @@ static void csm_heartbeat(struct work_struct *work)
 static int config_send_response(int err)
 {
 	char buf[CSM_ERROR_BUF_SIZE] = {};
-	schema_ConfigurationResponse resp =
-		schema_ConfigurationResponse_init_zero;
+	schema_ConfigurationResponse resp = {};
 
 	resp.error = schema_ConfigurationResponse_ErrorCode_NO_ERROR;
 	resp.version = CSM_VERSION;

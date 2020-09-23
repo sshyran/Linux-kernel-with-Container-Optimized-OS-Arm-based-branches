@@ -205,7 +205,7 @@ static void csm_update_config(schema_ConfigurationRequest *req)
 
 int csm_update_config_from_buffer(void *data, size_t size)
 {
-	schema_ConfigurationRequest c = schema_ConfigurationRequest_init_zero;
+	schema_ConfigurationRequest c = {};
 	pb_istream_t istream;
 
 	c.execute_config.envp_allowlist.funcs.decode = pb_decode_string_array;
@@ -255,7 +255,7 @@ static const struct file_operations csm_config_fops = {
 
 static void csm_enable(void)
 {
-	schema_ConfigurationRequest req = schema_ConfigurationRequest_init_zero;
+	schema_ConfigurationRequest req = {};
 
 	/* Expect the lock to be held for write before this call. */
 	lockdep_assert_held_write(&csm_rwsem_config);
@@ -271,7 +271,7 @@ static void csm_enable(void)
 
 static void csm_disable(void)
 {
-	schema_ConfigurationRequest req = schema_ConfigurationRequest_init_zero;
+	schema_ConfigurationRequest req = {};
 
 	/* Expect the lock to be held for write before this call. */
 	lockdep_assert_held_write(&csm_rwsem_config);
@@ -500,8 +500,8 @@ static ssize_t csm_container_write(struct file *file, const char __user *buf,
 	u64 cid;
 	pb_istream_t istream;
 	struct task_struct *task;
-	schema_ContainerReport report = schema_ContainerReport_init_zero;
-	schema_Event event = schema_Event_init_zero;
+	schema_ContainerReport report = {};
+	schema_Event event = {};
 	schema_Container *container;
 	char *uuid = NULL;
 
