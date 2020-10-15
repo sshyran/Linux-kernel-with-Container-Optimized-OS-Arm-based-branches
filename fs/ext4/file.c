@@ -191,9 +191,12 @@ ext4_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	struct inode *inode = file_inode(iocb->ki_filp);
 	ssize_t ret;
 
+	ext4_fc_start_update(inode);
 	if (iocb->ki_flags & IOCB_NOWAIT) {
-		if (!inode_trylock(inode))
+		if (!inode_trylock(inode)) {
+			ext4_fc_stop_update(inode);
 			return -EAGAIN;
+		}
 	} else {
 		inode_lock(inode);
 	}
@@ -210,6 +213,7 @@ ext4_dax_write_iter(struct kiocb *iocb, struct iov_iter *from)
 	ret = dax_iomap_rw(iocb, from, &ext4_iomap_ops);
 out:
 	inode_unlock(inode);
+	ext4_fc_stop_update(inode);
 	if (ret > 0)
 		ret = generic_write_sync(iocb, ret);
 	return ret;
@@ -384,6 +388,7 @@ static int ext4_file_mmap(struct file *file, struct vm_area_struct *vma)
 	if (!daxdev_mapping_supported(vma, dax_dev))
 		return -EOPNOTSUPP;
 
+	ext4_fc_start_update(inode);
 	file_accessed(file);
 	if (IS_DAX(file_inode(file))) {
 		vma->vm_ops = &ext4_dax_vm_ops;
@@ -391,6 +396,7 @@ static int ext4_file_mmap(struct file *file, struct vm_area_struct *vma)
 	} else {
 		vma->vm_ops = &ext4_file_vm_ops;
 	}
+	ext4_fc_stop_update(inode);
 	return 0;
 }
 
