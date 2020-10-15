@@ -862,6 +862,13 @@ struct journal_s
 	wait_queue_head_t	j_wait_reserved;
 
 	/**
+	 * @j_fc_wait:
+	 *
+	 * Wait queue to wait for completion of async fast commits.
+	 */
+	wait_queue_head_t	j_fc_wait;
+
+	/**
 	 * @j_checkpoint_mutex:
 	 *
 	 * Semaphore for locking against concurrent checkpoints.
@@ -1204,6 +1211,15 @@ struct journal_s
 	 */
 	struct lockdep_map	j_trans_commit_map;
 #endif
+
+	/**
+	 * @j_fc_cleanup_callback:
+	 *
+	 * Clean-up after fast commit or full commit. JBD2 calls this function
+	 * after every commit operation.
+	 */
+	void (*j_fc_cleanup_callback)(struct journal_s *journal, int);
+
 };
 
 #define jbd2_might_wait_for_commit(j) \
@@ -1289,6 +1305,8 @@ JBD2_FEATURE_INCOMPAT_FUNCS(fast_commit,	FAST_COMMIT)
 						 * data write error in ordered
 						 * mode */
 #define JBD2_REC_ERR	0x080	/* The errno in the sb has been recorded */
+#define JBD2_FAST_COMMIT_ONGOING	0x100	/* Fast commit is ongoing */
+#define JBD2_FULL_COMMIT_ONGOING	0x200	/* Full commit is ongoing */
 
 /*
  * Function declarations for the journaling transaction and buffer
@@ -1541,6 +1559,15 @@ extern int jbd2_cleanup_journal_tail(journal_t *);
 
 /* Fast commit related APIs */
 int jbd2_fc_init(journal_t *journal, int num_fc_blks);
+int jbd2_fc_begin_commit(journal_t *journal, tid_t tid);
+int jbd2_fc_end_commit(journal_t *journal);
+int jbd2_fc_end_commit_fallback(journal_t *journal, tid_t tid);
+int jbd2_fc_get_buf(journal_t *journal, struct buffer_head **bh_out);
+int jbd2_submit_inode_data(struct jbd2_inode *jinode);
+int jbd2_wait_inode_data(journal_t *journal, struct jbd2_inode *jinode);
+int jbd2_fc_wait_bufs(journal_t *journal, int num_blks);
+int jbd2_fc_release_bufs(journal_t *journal);
+
 /*
  * is_journal_abort
  *
