@@ -642,6 +642,7 @@ asmlinkage __visible void __init start_kernel(void)
 	softirq_init();
 	timekeeping_init();
 	time_init();
+	printk_safe_init();
 	perf_event_init();
 	profile_init();
 	call_function_init();
@@ -736,8 +737,6 @@ asmlinkage __visible void __init start_kernel(void)
 
 	/* Do the rest non-__init'ed, we're now alive */
 	rest_init();
-
-	prevent_tail_call_optimization();
 }
 
 /* Call all constructor functions linked into the kernel. */

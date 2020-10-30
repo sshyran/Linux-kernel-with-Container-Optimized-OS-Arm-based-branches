@@ -108,10 +108,11 @@ static enum blk_eh_timer_return mmc_cqe_timed_out(struct request *req)
 	case MMC_ISSUE_DCMD:
 		if (host->cqe_ops->cqe_timeout(host, mrq, &recovery_needed)) {
 			if (recovery_needed)
-				mmc_cqe_recovery_notifier(mrq);
+				__mmc_cqe_recovery_notifier(mq);
 			return BLK_EH_RESET_TIMER;
 		}
-		/* The request has gone already */
+		/* No timeout (XXX: huh? comment doesn't make much sense) */
+		blk_mq_complete_request(req);
 		return BLK_EH_DONE;
 	default:
 		/* Timeout is handled by mmc core */
@@ -125,13 +126,18 @@ static enum blk_eh_timer_return mmc_mq_timed_out(struct request *req,
 	struct request_queue *q = req->q;
 	struct mmc_queue *mq = q->queuedata;
 	unsigned long flags;
-	bool ignore_tout;
+	int ret;
 
 	spin_lock_irqsave(q->queue_lock, flags);
-	ignore_tout = mq->recovery_needed || !mq->use_cqe;
+
+	if (mq->recovery_needed || !mq->use_cqe)
+		ret = BLK_EH_RESET_TIMER;
+	else
+		ret = mmc_cqe_timed_out(req);
+
 	spin_unlock_irqrestore(q->queue_lock, flags);
 
-	return ignore_tout ? BLK_EH_RESET_TIMER : mmc_cqe_timed_out(req);
+	return ret;
 }
 
 static void mmc_mq_recovery_handler(struct work_struct *work)

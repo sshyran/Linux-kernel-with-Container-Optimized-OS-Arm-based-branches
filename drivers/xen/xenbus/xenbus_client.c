@@ -365,14 +365,8 @@ int xenbus_grant_ring(struct xenbus_device *dev, void *vaddr,
 	int i, j;
 
 	for (i = 0; i < nr_pages; i++) {
-		unsigned long gfn;
-
-		if (is_vmalloc_addr(vaddr))
-			gfn = pfn_to_gfn(vmalloc_to_pfn(vaddr));
-		else
-			gfn = virt_to_gfn(vaddr);
-
-		err = gnttab_grant_foreign_access(dev->otherend_id, gfn, 0);
+		err = gnttab_grant_foreign_access(dev->otherend_id,
+						  virt_to_gfn(vaddr), 0);
 		if (err < 0) {
 			xenbus_dev_fatal(dev, err,
 					 "granting access to ring page");
@@ -456,14 +450,7 @@ EXPORT_SYMBOL_GPL(xenbus_free_evtchn);
 int xenbus_map_ring_valloc(struct xenbus_device *dev, grant_ref_t *gnt_refs,
 			   unsigned int nr_grefs, void **vaddr)
 {
-	int err;
-
-	err = ring_ops->map(dev, gnt_refs, nr_grefs, vaddr);
-	/* Some hypervisors are buggy and can return 1. */
-	if (err > 0)
-		err = GNTST_general_error;
-
-	return err;
+	return ring_ops->map(dev, gnt_refs, nr_grefs, vaddr);
 }
 EXPORT_SYMBOL_GPL(xenbus_map_ring_valloc);
 
