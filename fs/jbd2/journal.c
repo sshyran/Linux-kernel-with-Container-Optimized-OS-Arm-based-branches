@@ -1331,7 +1331,7 @@ static journal_t *journal_init_common(struct block_device *bdev,
 	journal->j_dev = bdev;
 	journal->j_fs_dev = fs_dev;
 	journal->j_blk_offset = start;
-	journal->j_maxlen = len;
+	journal->j_total_len = len;
 	n = journal->j_blocksize / sizeof(journal_block_tag_t);
 	journal->j_wbufsize = n;
 	journal->j_wbuf = kmalloc_array(n, sizeof(struct buffer_head *),
@@ -1510,7 +1510,7 @@ static int journal_reset(journal_t *journal)
 	journal->j_commit_sequence = journal->j_transaction_sequence - 1;
 	journal->j_commit_request = journal->j_commit_sequence;
 
-	journal->j_max_transaction_buffers = journal->j_maxlen / 4;
+	journal->j_max_transaction_buffers = jbd2_journal_get_max_txn_bufs(journal);
 
 	/*
 	 * As a special case, if the on-disk copy is already marked as needing
@@ -1755,15 +1755,15 @@ static int journal_get_superblock(journal_t *journal)
 		goto out;
 	}
 
-	if (be32_to_cpu(sb->s_maxlen) < journal->j_maxlen)
-		journal->j_maxlen = be32_to_cpu(sb->s_maxlen);
-	else if (be32_to_cpu(sb->s_maxlen) > journal->j_maxlen) {
+	if (be32_to_cpu(sb->s_maxlen) < journal->j_total_len)
+		journal->j_total_len = be32_to_cpu(sb->s_maxlen);
+	else if (be32_to_cpu(sb->s_maxlen) > journal->j_total_len) {
 		printk(KERN_WARNING "JBD2: journal file too short\n");
 		goto out;
 	}
 
 	if (be32_to_cpu(sb->s_first) == 0 ||
-	    be32_to_cpu(sb->s_first) >= journal->j_maxlen) {
+	    be32_to_cpu(sb->s_first) >= journal->j_total_len) {
 		printk(KERN_WARNING
 			"JBD2: Invalid start block of journal: %u\n",
 			be32_to_cpu(sb->s_first));
