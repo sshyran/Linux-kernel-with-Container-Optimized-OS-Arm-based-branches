@@ -4839,7 +4839,7 @@ static long ext4_zero_range(struct file *file, loff_t offset,
 			ext4_set_inode_flag(inode, EXT4_INODE_EOFBLOCKS);
 	}
 	ext4_mark_inode_dirty(handle, inode);
-	ext4_fc_track_range(inode, offset >> inode->i_sb->s_blocksize_bits,
+	ext4_fc_track_range(handle, inode, offset >> inode->i_sb->s_blocksize_bits,
 			(offset + len - 1) >> inode->i_sb->s_blocksize_bits);
 
 	/* Zero out partial block at the edges of the range */
