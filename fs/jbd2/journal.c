@@ -1334,18 +1334,11 @@ static journal_t *journal_init_common(struct block_device *bdev,
 	journal->j_total_len = len;
 	n = journal->j_blocksize / sizeof(journal_block_tag_t);
 	journal->j_wbufsize = n;
+	journal->j_fc_wbuf = NULL;
 	journal->j_wbuf = kmalloc_array(n, sizeof(struct buffer_head *),
 					GFP_KERNEL);
 	if (!journal->j_wbuf)
 		goto err_cleanup;
-
-	if (journal->j_fc_wbufsize > 0) {
-		journal->j_fc_wbuf = kmalloc_array(journal->j_fc_wbufsize,
-					sizeof(struct buffer_head *),
-					GFP_KERNEL);
-		if (!journal->j_fc_wbuf)
-			goto err_cleanup;
-	}
 
 	bh = getblk_unmovable(journal->j_dev, start, journal->j_blocksize);
 	if (!bh) {
@@ -1360,22 +1353,10 @@ static journal_t *journal_init_common(struct block_device *bdev,
 
 err_cleanup:
 	kfree(journal->j_wbuf);
-	kfree(journal->j_fc_wbuf);
 	jbd2_journal_destroy_revoke(journal);
 	kfree(journal);
 	return NULL;
 }
-
-int jbd2_fc_init(journal_t *journal, int num_fc_blks)
-{
-	journal->j_fc_wbufsize = num_fc_blks;
-	journal->j_fc_wbuf = kmalloc_array(journal->j_fc_wbufsize,
-				sizeof(struct buffer_head *), GFP_KERNEL);
-	if (!journal->j_fc_wbuf)
-		return -ENOMEM;
-	return 0;
-}
-EXPORT_SYMBOL(jbd2_fc_init);
 
 /* jbd2_journal_init_dev and jbd2_journal_init_inode:
  *
@@ -1491,16 +1472,7 @@ static int journal_reset(journal_t *journal)
 	}
 
 	journal->j_first = first;
-
-	if (jbd2_has_feature_fast_commit(journal) &&
-	    journal->j_fc_wbufsize > 0) {
-		journal->j_fc_last = last;
-		journal->j_last = last - journal->j_fc_wbufsize;
-		journal->j_fc_first = journal->j_last + 1;
-		journal->j_fc_off = 0;
-	} else {
-		journal->j_last = last;
-	}
+	journal->j_last = last;
 
 	journal->j_head = journal->j_first;
 	journal->j_tail = journal->j_first;
@@ -1511,6 +1483,13 @@ static int journal_reset(journal_t *journal)
 	journal->j_commit_request = journal->j_commit_sequence;
 
 	journal->j_max_transaction_buffers = jbd2_journal_get_max_txn_bufs(journal);
+
+	/*
+	 * Now that journal recovery is done, turn fast commits off here. This
+	 * way, if fast commit was enabled before the crash but if now FS has
+	 * disabled it, we don't enable fast commits.
+	 */
+	jbd2_clear_feature_fast_commit(journal);
 
 	/*
 	 * As a special case, if the on-disk copy is already marked as needing
@@ -1833,6 +1812,7 @@ static int load_superblock(journal_t *journal)
 {
 	int err;
 	journal_superblock_t *sb;
+	int num_fc_blocks;
 
 	err = journal_get_superblock(journal);
 	if (err)
@@ -1844,15 +1824,17 @@ static int load_superblock(journal_t *journal)
 	journal->j_tail = be32_to_cpu(sb->s_start);
 	journal->j_first = be32_to_cpu(sb->s_first);
 	journal->j_errno = be32_to_cpu(sb->s_errno);
+	journal->j_last = be32_to_cpu(sb->s_maxlen);
 
-	if (jbd2_has_feature_fast_commit(journal) &&
-	    journal->j_fc_wbufsize > 0) {
+	if (jbd2_has_feature_fast_commit(journal)) {
 		journal->j_fc_last = be32_to_cpu(sb->s_maxlen);
-		journal->j_last = journal->j_fc_last - journal->j_fc_wbufsize;
+		num_fc_blocks = be32_to_cpu(sb->s_num_fc_blks);
+		if (!num_fc_blocks)
+			num_fc_blocks = JBD2_MIN_FC_BLOCKS;
+		if (journal->j_last - num_fc_blocks >= JBD2_MIN_JOURNAL_BLOCKS)
+			journal->j_last = journal->j_fc_last - num_fc_blocks;
 		journal->j_fc_first = journal->j_last + 1;
 		journal->j_fc_off = 0;
-	} else {
-		journal->j_last = be32_to_cpu(sb->s_maxlen);
 	}
 
 	return 0;
@@ -1915,9 +1897,6 @@ int jbd2_journal_load(journal_t *journal)
 	 */
 	journal->j_flags &= ~JBD2_ABORT;
 
-	if (journal->j_fc_wbufsize > 0)
-		jbd2_journal_set_features(journal, 0, 0,
-					  JBD2_FEATURE_INCOMPAT_FAST_COMMIT);
 	/* OK, we've finished with the dynamic journal bits:
 	 * reinitialise the dynamic contents of the superblock in memory
 	 * and reset them on disk. */
@@ -2001,8 +1980,7 @@ int jbd2_journal_destroy(journal_t *journal)
 		jbd2_journal_destroy_revoke(journal);
 	if (journal->j_chksum_driver)
 		crypto_free_shash(journal->j_chksum_driver);
-	if (journal->j_fc_wbufsize > 0)
-		kfree(journal->j_fc_wbuf);
+	kfree(journal->j_fc_wbuf);
 	kfree(journal->j_wbuf);
 	kfree(journal);
 
@@ -2077,6 +2055,37 @@ int jbd2_journal_check_available_features (journal_t *journal, unsigned long com
 	return 0;
 }
 
+static int
+jbd2_journal_initialize_fast_commit(journal_t *journal)
+{
+	journal_superblock_t *sb = journal->j_superblock;
+	unsigned long long num_fc_blks;
+
+	num_fc_blks = be32_to_cpu(sb->s_num_fc_blks);
+	if (num_fc_blks == 0)
+		num_fc_blks = JBD2_MIN_FC_BLOCKS;
+	if (journal->j_last - num_fc_blks < JBD2_MIN_JOURNAL_BLOCKS)
+		return -ENOSPC;
+
+	/* Are we called twice? */
+	WARN_ON(journal->j_fc_wbuf != NULL);
+	journal->j_fc_wbuf = kmalloc_array(num_fc_blks,
+				sizeof(struct buffer_head *), GFP_KERNEL);
+	if (!journal->j_fc_wbuf)
+		return -ENOMEM;
+
+	journal->j_fc_wbufsize = num_fc_blks;
+	journal->j_fc_last = journal->j_last;
+	journal->j_last = journal->j_fc_last - num_fc_blks;
+	journal->j_fc_first = journal->j_last + 1;
+	journal->j_fc_off = 0;
+	journal->j_free = journal->j_last - journal->j_first;
+	journal->j_max_transaction_buffers =
+		jbd2_journal_get_max_txn_bufs(journal);
+
+	return 0;
+}
+
 /**
  * int jbd2_journal_set_features () - Mark a given journal feature in the superblock
  * @journal: Journal to act on.
@@ -2119,6 +2128,13 @@ int jbd2_journal_set_features (journal_t *journal, unsigned long compat,
 		  compat, ro, incompat);
 
 	sb = journal->j_superblock;
+
+	if (incompat & JBD2_FEATURE_INCOMPAT_FAST_COMMIT) {
+		if (jbd2_journal_initialize_fast_commit(journal)) {
+			pr_err("JBD2: Cannot enable fast commits.\n");
+			return 0;
+		}
+	}
 
 	/* Load the checksum driver if necessary */
 	if ((journal->j_chksum_driver == NULL) &&
