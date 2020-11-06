@@ -863,7 +863,6 @@ int jbd2_fc_get_buf(journal_t *journal, struct buffer_head **bh_out)
 	int fc_off;
 
 	*bh_out = NULL;
-	write_lock(&journal->j_state_lock);
 
 	if (journal->j_fc_off + journal->j_fc_first < journal->j_fc_last) {
 		fc_off = journal->j_fc_off;
@@ -872,7 +871,6 @@ int jbd2_fc_get_buf(journal_t *journal, struct buffer_head **bh_out)
 	} else {
 		ret = -EINVAL;
 	}
-	write_unlock(&journal->j_state_lock);
 
 	if (ret)
 		return ret;
@@ -907,9 +905,7 @@ int jbd2_fc_wait_bufs(journal_t *journal, int num_blks)
 	struct buffer_head *bh;
 	int i, j_fc_off;
 
-	read_lock(&journal->j_state_lock);
 	j_fc_off = journal->j_fc_off;
-	read_unlock(&journal->j_state_lock);
 
 	/*
 	 * Wait in reverse order to minimize chances of us being woken up before
@@ -937,9 +933,7 @@ int jbd2_fc_release_bufs(journal_t *journal)
 	struct buffer_head *bh;
 	int i, j_fc_off;
 
-	read_lock(&journal->j_state_lock);
 	j_fc_off = journal->j_fc_off;
-	read_unlock(&journal->j_state_lock);
 
 	/*
 	 * Wait in reverse order to minimize chances of us being woken up before
