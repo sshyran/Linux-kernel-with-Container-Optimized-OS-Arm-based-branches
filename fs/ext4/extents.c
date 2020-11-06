@@ -3898,7 +3898,6 @@ static int ext4_convert_unwritten_extents_endio(handle_t *handle,
 	err = ext4_ext_dirty(handle, inode, path + path->p_depth);
 out:
 	ext4_ext_show_leaf(inode, path);
-	ext4_fc_track_range(inode, ee_block, ee_block + ee_len - 1);
 	return err;
 }
 
@@ -4026,7 +4025,6 @@ convert_initialized_extent(handle_t *handle, struct inode *inode,
 	if (allocated > map->m_len)
 		allocated = map->m_len;
 	map->m_len = allocated;
-	ext4_fc_track_range(inode, ee_block, ee_block + ee_len - 1);
 	return allocated;
 }
 
@@ -4566,7 +4564,6 @@ out:
 	map->m_flags |= EXT4_MAP_MAPPED;
 	map->m_pblk = newblock;
 	map->m_len = allocated;
-	ext4_fc_track_range(inode, map->m_lblk, map->m_lblk + map->m_len - 1);
 out2:
 	ext4_ext_drop_refs(path);
 	kfree(path);
@@ -4896,8 +4893,6 @@ long ext4_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
 		     FALLOC_FL_COLLAPSE_RANGE | FALLOC_FL_ZERO_RANGE |
 		     FALLOC_FL_INSERT_RANGE))
 		return -EOPNOTSUPP;
-	ext4_fc_track_range(inode, offset >> blkbits,
-			(offset + len - 1) >> blkbits);
 
 	ext4_fc_start_update(inode);
 
