@@ -4356,7 +4356,7 @@ static void ext4_mb_show_ac(struct ext4_allocation_context *ac)
 	ext4_group_t ngroups, i;
 
 	if (!ext4_mballoc_debug ||
-	    (EXT4_SB(sb)->s_mount_flags & EXT4_MF_FS_ABORTED))
+	    (ext4_test_mount_flag(sb, EXT4_MF_FS_ABORTED)))
 		return;
 
 	ext4_msg(ac->ac_sb, KERN_ERR, "Can't allocate:"
