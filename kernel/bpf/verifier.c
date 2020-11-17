@@ -3312,13 +3312,17 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 		expected_type = CONST_PTR_TO_MAP;
 		if (type != expected_type)
 			goto err_type;
-	} else if (arg_type == ARG_PTR_TO_CTX) {
+	} else if (arg_type == ARG_PTR_TO_CTX ||
+		   arg_type == ARG_PTR_TO_CTX_OR_NULL) {
 		expected_type = PTR_TO_CTX;
-		if (type != expected_type)
-			goto err_type;
-		err = check_ctx_reg(env, reg, regno);
-		if (err < 0)
-			return err;
+		if (!(register_is_null(reg) &&
+		      arg_type == ARG_PTR_TO_CTX_OR_NULL)) {
+			if (type != expected_type)
+				goto err_type;
+			err = check_ctx_reg(env, reg, regno);
+			if (err < 0)
+				return err;
+		}
 	} else if (arg_type == ARG_PTR_TO_SOCK_COMMON) {
 		expected_type = PTR_TO_SOCK_COMMON;
 		/* Any sk pointer can be ARG_PTR_TO_SOCK_COMMON */
@@ -6224,7 +6228,11 @@ static int check_return_code(struct bpf_verifier_env *env)
 	switch (env->prog->type) {
 	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
 		if (env->prog->expected_attach_type == BPF_CGROUP_UDP4_RECVMSG ||
-		    env->prog->expected_attach_type == BPF_CGROUP_UDP6_RECVMSG)
+		    env->prog->expected_attach_type == BPF_CGROUP_UDP6_RECVMSG ||
+		    env->prog->expected_attach_type == BPF_CGROUP_INET4_GETPEERNAME ||
+		    env->prog->expected_attach_type == BPF_CGROUP_INET6_GETPEERNAME ||
+		    env->prog->expected_attach_type == BPF_CGROUP_INET4_GETSOCKNAME ||
+		    env->prog->expected_attach_type == BPF_CGROUP_INET6_GETSOCKNAME)
 			range = tnum_range(1, 1);
 		break;
 	case BPF_PROG_TYPE_CGROUP_SKB:
@@ -9250,6 +9258,30 @@ static int fixup_bpf_calls(struct bpf_verifier_env *env)
 			}
 
 			goto patch_call_imm;
+		}
+
+		if (prog->jit_requested && BITS_PER_LONG == 64 &&
+		    insn->imm == BPF_FUNC_jiffies64) {
+			struct bpf_insn ld_jiffies_addr[2] = {
+				BPF_LD_IMM64(BPF_REG_0,
+					     (unsigned long)&jiffies),
+			};
+
+			insn_buf[0] = ld_jiffies_addr[0];
+			insn_buf[1] = ld_jiffies_addr[1];
+			insn_buf[2] = BPF_LDX_MEM(BPF_DW, BPF_REG_0,
+						  BPF_REG_0, 0);
+			cnt = 3;
+
+			new_prog = bpf_patch_insn_data(env, i + delta, insn_buf,
+						       cnt);
+			if (!new_prog)
+				return -ENOMEM;
+
+			delta    += cnt - 1;
+			env->prog = prog = new_prog;
+			insn      = new_prog->insnsi + i + delta;
+			continue;
 		}
 
 patch_call_imm:
