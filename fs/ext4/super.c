@@ -2362,9 +2362,6 @@ static int _ext4_show_options(struct seq_file *seq, struct super_block *sb,
 	if (DUMMY_ENCRYPTION_ENABLED(sbi))
 		SEQ_OPTS_PUTS("test_dummy_encryption");
 
-	if (test_opt2(sb, JOURNAL_FAST_COMMIT))
-		SEQ_OPTS_PUTS("fast_commit");
-
 	ext4_show_quota_options(seq, sb);
 	return 0;
 }
