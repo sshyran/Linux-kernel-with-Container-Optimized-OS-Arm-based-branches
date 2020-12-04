@@ -26,12 +26,6 @@
 /* protects csm_*_enabled and configurations. */
 extern struct rw_semaphore csm_rwsem_config;
 
-/* protects csm_host_port and csm_vsocket. */
-extern struct rw_semaphore csm_rwsem_vsocket;
-
-/* Port to connect to the host on, over virtio-vsock */
-#define CSM_HOST_PORT 4444
-
 /*
  * Is monitoring enabled? Defaults to disabled.
  * These variables might be used as gates without locking (as processor ensures
@@ -50,12 +44,9 @@ struct execute_config {
 
 extern struct execute_config csm_execute_config;
 
-/* pipe to forward vsock packets to user-mode. */
+/* pipe to forward events to user-mode. */
 extern struct rw_semaphore csm_rwsem_pipe;
 extern struct file *csm_user_write_pipe;
-
-/* Was vsock enabled at boot time? */
-extern bool cmdline_boot_vsock_enabled;
 
 /* Stats on LSM events. */
 struct container_stats {
@@ -79,13 +70,8 @@ extern struct container_stats csm_stats;
 /* monitor functions */
 int csm_update_config_from_buffer(void *data, size_t size);
 
-/* vsock functions */
-int vsock_initialize(void);
-void vsock_destroy(void);
-int vsock_late_initialize(void);
+/* send event to userland */
 int csm_sendeventproto(const pb_field_t fields[], schema_Event *event);
-int csm_sendconfigrespproto(const pb_field_t fields[],
-			    schema_ConfigurationResponse *resp);
 
 /* process events functions */
 int csm_bprm_check_security(struct linux_binprm *bprm);
