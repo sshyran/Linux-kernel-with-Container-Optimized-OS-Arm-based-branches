@@ -161,7 +161,7 @@ static size_t get_config_limit(size_t *config_ptr)
 
 	/*
 	 * If execute is not enabled, do not capture arguments.
-	 * The vsock packet won't be sent anyway.
+	 * The event proto won't be sent anyway.
 	 */
 	if (!csm_execute_enabled)
 		return 0;

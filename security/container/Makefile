@@ -7,7 +7,7 @@ export PB_CCFLAGS
 subdir-$(CONFIG_SECURITY_CONTAINER_MONITOR) += protos
 
 obj-$(CONFIG_SECURITY_CONTAINER_MONITOR) += protos/
-obj-$(CONFIG_SECURITY_CONTAINER_MONITOR) += monitor.o pb.o process.o vsock.o
+obj-$(CONFIG_SECURITY_CONTAINER_MONITOR) += monitor.o pb.o process.o pipe.o
 
 ccflags-y := -I$(srctree)/security/container/protos \
 	-I$(srctree)/security/container/protos/nanopb \
