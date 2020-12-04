@@ -9,22 +9,18 @@
 #include "process.h"
 
 #include <linux/audit.h>
+#include <linux/file.h>
 #include <linux/lsm_hooks.h>
 #include <linux/module.h>
 #include <linux/pipe_fs_i.h>
+#include <linux/poll.h>
 #include <linux/rwsem.h>
+#include <linux/seq_file.h>
 #include <linux/string.h>
 #include <linux/sysctl.h>
-#include <linux/socket.h>
-#include <net/sock.h>
-#include <linux/vm_sockets.h>
-#include <linux/file.h>
 
 /* protects csm_*_enabled and configurations. */
 DECLARE_RWSEM(csm_rwsem_config);
-
-/* protects csm_host_port and csm_vsocket. */
-DECLARE_RWSEM(csm_rwsem_vsocket);
 
 /* queue used for poll wait on config changes. */
 static DECLARE_WAIT_QUEUE_HEAD(config_wait);
@@ -558,7 +554,7 @@ static ssize_t csm_container_write(struct file *file, const char __user *buf,
 	if (err)
 		goto out;
 
-	/* Correct the container-id and feed the event to vsock */
+	/* Correct the container-id and feed the event to pipe */
 	report.container.container_id = cid;
 	report.container.init_uuid.funcs.encode = pb_encode_uuid_field;
 	report.container.init_uuid.arg = uuid;
@@ -624,30 +620,6 @@ static const struct file_operations csm_stats_fops = {
 	.release	= single_release,
 };
 
-/* Prevent user-mode from using vsock on our port. */
-static int csm_socket_connect(struct socket *sock, struct sockaddr *address,
-			      int addrlen)
-{
-	struct sockaddr_vm *vaddr = (struct sockaddr_vm *)address;
-
-	/* Filter only vsock sockets */
-	if (!sock->sk || sock->sk->sk_family != AF_VSOCK)
-		return 0;
-
-	/* Allow kernel sockets. */
-	if (sock->sk->sk_kern_sock)
-		return 0;
-
-	if (addrlen < sizeof(*vaddr))
-		return -EINVAL;
-
-	/* Forbid access to the CSM VMM backend port. */
-	if (vaddr->svm_port == CSM_HOST_PORT)
-		return -EPERM;
-
-	return 0;
-}
-
 static int csm_setxattr(struct dentry *dentry, const char *name,
 			const void *value, size_t size, int flags)
 {
@@ -661,9 +633,6 @@ static struct security_hook_list csm_hooks[] __lsm_ro_after_init = {
 	LSM_HOOK_INIT(bprm_check_security, csm_bprm_check_security),
 	LSM_HOOK_INIT(task_post_alloc, csm_task_post_alloc),
 	LSM_HOOK_INIT(task_exit, csm_task_exit),
-
-	/* Block vsock access when relevant. */
-	LSM_HOOK_INIT(socket_connect, csm_socket_connect),
 
 	/* Track memory execution */
 	LSM_HOOK_INIT(file_mprotect, csm_mprotect),
@@ -683,13 +652,8 @@ static int __init csm_init(void)
 	if (cmdline_boot_disabled)
 		return 0;
 
-	/*
-	 * If cmdline_boot_vsock_enabled is false, only the event pool will be
-	 * allocated. The destroy function will clean-up only what was reserved.
-	 */
-	err = vsock_initialize();
-	if (err)
-		return err;
+	if (cmdline_boot_vsock_enabled)
+		pr_debug("vsock is deprecated, but was enabled at boot\n");
 
 	csm_dir = securityfs_create_dir("container_monitor", NULL);
 	if (IS_ERR(csm_dir)) {
@@ -774,7 +738,6 @@ error_rm_enabled:
 error_rmdir:
 	securityfs_remove(csm_dir);
 error:
-	vsock_destroy();
 	pr_warn("fs initialization error: %d", err);
 	return err;
 }
