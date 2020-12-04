@@ -8,7 +8,6 @@
 #include "monitor.h"
 
 #include <linux/string.h>
-#include <net/sock.h>
 #include <net/tcp.h>
 #include <net/ipv6.h>
 
