@@ -38,6 +38,8 @@
 #define NIC_TX_STATS_REPORT_NUM	0
 #define NIC_RX_STATS_REPORT_NUM	4
 
+#define GVE_DATA_SLOT_ADDR_PAGE_MASK (~(PAGE_SIZE - 1))
+
 /* Each slot in the desc ring has a 1:1 mapping to a slot in the data ring */
 struct gve_rx_desc_queue {
 	struct gve_rx_desc *desc_ring; /* the descriptor ring */
@@ -51,7 +53,7 @@ struct gve_rx_slot_page_info {
 	void *page_address;
 	u32 page_offset; /* offset to write to in page */
 	int pagecnt_bias; /* expected pagecnt if only the driver has a ref */
-	bool can_flip; /* page can be flipped and reused */
+	u8 can_flip;
 };
 
 /* A list of pages registered with the device during setup and used by a queue
@@ -66,11 +68,11 @@ struct gve_queue_page_list {
 
 /* Each slot in the data ring has a 1:1 mapping to a slot in the desc ring */
 struct gve_rx_data_queue {
-	struct gve_rx_data_slot *data_ring; /* read by NIC */
+	union gve_rx_data_slot *data_ring; /* read by NIC */
 	dma_addr_t data_bus; /* dma mapping of the slots */
 	struct gve_rx_slot_page_info *page_info; /* page info of the buffers */
 	struct gve_queue_page_list *qpl; /* qpl assigned to this queue */
-	bool raw_addressing; /* use raw_addressing? */
+	u8 raw_addressing; /* use raw_addressing? */
 };
 
 struct gve_priv;
@@ -148,7 +150,8 @@ struct gve_tx_ring {
 	__be32 last_nic_done ____cacheline_aligned; /* NIC tail pointer */
 	u64 pkt_done; /* free-running - total packets completed */
 	u64 bytes_done; /* free-running - total bytes completed */
-	u32 dropped_pkt; /* free-running - total packets dropped */
+	u64 dropped_pkt; /* free-running - total packets dropped */
+	u64 dma_mapping_error; /* count of dma mapping errors */
 
 	/* Cacheline 2 -- Read-mostly fields */
 	union gve_tx_desc *desc ____cacheline_aligned;
@@ -157,7 +160,7 @@ struct gve_tx_ring {
 	struct gve_queue_resources *q_resources; /* head and tail pointer idx */
 	struct device *dev;
 	u32 mask; /* masks req and done down to queue size */
-	bool raw_addressing; /* use raw_addressing? */
+	u8 raw_addressing; /* use raw_addressing? */
 
 	/* Slow-path fields */
 	u32 q_num ____cacheline_aligned; /* queue idx */
@@ -222,7 +225,7 @@ struct gve_priv {
 	u64 num_registered_pages; /* num pages registered with NIC */
 	u32 rx_copybreak; /* copy packets smaller than this */
 	u16 default_num_queues; /* default num queues to set up */
-	bool raw_addressing; /* true if this dev supports raw addressing */
+	u8 raw_addressing; /* true if this dev supports raw addressing */
 
 	struct gve_queue_config tx_cfg;
 	struct gve_queue_config rx_cfg;
@@ -460,22 +463,14 @@ static inline u32 gve_rx_idx_to_ntfy(struct gve_priv *priv, u32 queue_idx)
  */
 static inline u32 gve_num_tx_qpls(struct gve_priv *priv)
 {
-	if (priv->raw_addressing) {
-		return 0;
-	} else {
-		return priv->tx_cfg.num_queues;
-	}
+	return priv->raw_addressing ? 0 : priv->tx_cfg.num_queues;
 }
 
 /* Returns the number of rx queue page lists
  */
 static inline u32 gve_num_rx_qpls(struct gve_priv *priv)
 {
-	if (priv->raw_addressing) {
-		return 0;
-	} else {
-		return priv->rx_cfg.num_queues;
-	}
+	return priv->raw_addressing ? 0 : priv->rx_cfg.num_queues;
 }
 
 /* Returns a pointer to the next available tx qpl in the list of qpls
