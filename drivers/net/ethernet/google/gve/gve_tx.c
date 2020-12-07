@@ -315,25 +315,23 @@ static inline int gve_skb_fifo_bytes_required(struct gve_tx_ring *tx,
 	return bytes;
 }
 
-/* The most descriptors we could need are 3 - 1 for the headers, 1 for
- * the beginning of the payload at the end of the FIFO, and 1 if the
- * payload wraps to the beginning of the FIFO.
+/* The most descriptors we could need is MAX_SKB_FRAGS + 3 : 1 for each skb frag,
+ * +1 for the skb linear portion, +1 for when tcp hdr needs to be in separate descriptor,
+ * and +1 if the payload wraps to the beginning of the FIFO.
  */
-#define MAX_TX_DESC_NEEDED	3
-static void gve_tx_unmap_buf(struct device *dev,
-			     struct gve_tx_dma_buf *buf)
+#define MAX_TX_DESC_NEEDED	(MAX_SKB_FRAGS + 3)
+static void gve_tx_unmap_buf(struct device *dev, struct gve_tx_buffer_state *info)
 {
-	const int buf_len = (int)dma_unmap_len(buf, len);
-	if (buf_len > 0) {
-		dma_unmap_single(dev, dma_unmap_addr(buf, dma),
-				 dma_unmap_len(buf, len),
+	if (info->skb) {
+		dma_unmap_single(dev, dma_unmap_addr(&info->buf, dma),
+				 dma_unmap_len(&info->buf, len),
 				 DMA_TO_DEVICE);
-		dma_unmap_len_set(buf, len, 0);
-	} else if (buf_len < 0) {
-		dma_unmap_page(dev, dma_unmap_addr(buf, dma),
-			       -dma_unmap_len(buf, len),
+		dma_unmap_len_set(&info->buf, len, 0);
+	} else {
+		dma_unmap_page(dev, dma_unmap_addr(&info->buf, dma),
+			       dma_unmap_len(&info->buf, len),
 			       DMA_TO_DEVICE);
-		dma_unmap_len_set(buf, len, 0);
+		dma_unmap_len_set(&info->buf, len, 0);
 	}
 }
 
@@ -426,23 +424,19 @@ static void gve_tx_fill_seg_desc(union gve_tx_desc *seg_desc,
 	seg_desc->seg.seg_addr = cpu_to_be64(addr);
 }
 
-static void gve_dma_sync_for_device(struct gve_priv *priv,
-								dma_addr_t *page_buses,
-								u64 iov_offset, u64 iov_len)
+static void gve_dma_sync_for_device(struct device *dev, dma_addr_t *page_buses,
+				    u64 iov_offset, u64 iov_len)
 {
 	u64 last_page = (iov_offset + iov_len - 1) / PAGE_SIZE;
 	u64 first_page = iov_offset / PAGE_SIZE;
 	u64 page;
 
 	for (page = first_page; page <= last_page; page++) {
-		dma_addr_t dma = page_buses[page];
-		dma_sync_single_for_device(&priv->pdev->dev, dma, PAGE_SIZE,
-					   DMA_TO_DEVICE);
+		dma_sync_single_for_device(dev, page_buses[page], PAGE_SIZE, DMA_TO_DEVICE);
 	}
 }
 
-static int gve_tx_add_skb_copy(struct gve_priv* priv, struct gve_tx_ring *tx,
-								struct sk_buff *skb)
+static int gve_tx_add_skb_copy(struct gve_priv *priv, struct gve_tx_ring *tx, struct sk_buff *skb)
 {
 	int pad_bytes, hlen, hdr_nfrags, payload_nfrags, l4_hdr_offset;
 	union gve_tx_desc *pkt_desc, *seg_desc;
@@ -484,7 +478,7 @@ static int gve_tx_add_skb_copy(struct gve_priv* priv, struct gve_tx_ring *tx,
 	skb_copy_bits(skb, 0,
 		      tx->tx_fifo.base + info->iov[hdr_nfrags - 1].iov_offset,
 		      hlen);
-	gve_dma_sync_for_device(priv, tx->tx_fifo.qpl->page_buses,
+	gve_dma_sync_for_device(&priv->pdev->dev, tx->tx_fifo.qpl->page_buses,
 				info->iov[hdr_nfrags - 1].iov_offset,
 				info->iov[hdr_nfrags - 1].iov_len);
 	copy_offset = hlen;
@@ -500,7 +494,7 @@ static int gve_tx_add_skb_copy(struct gve_priv* priv, struct gve_tx_ring *tx,
 		skb_copy_bits(skb, copy_offset,
 			      tx->tx_fifo.base + info->iov[i].iov_offset,
 			      info->iov[i].iov_len);
-		gve_dma_sync_for_device(priv, tx->tx_fifo.qpl->page_buses,
+		gve_dma_sync_for_device(&priv->pdev->dev, tx->tx_fifo.qpl->page_buses,
 					info->iov[i].iov_offset,
 					info->iov[i].iov_len);
 		copy_offset += info->iov[i].iov_len;
@@ -513,13 +507,12 @@ static int gve_tx_add_skb_no_copy(struct gve_priv *priv, struct gve_tx_ring *tx,
 				  struct sk_buff *skb)
 {
 	const struct skb_shared_info *shinfo = skb_shinfo(skb);
-	int hlen, payload_nfrags, l4_hdr_offset, seg_idx_bias;
+	int hlen, payload_nfrags, l4_hdr_offset;
 	union gve_tx_desc *pkt_desc, *seg_desc;
 	struct gve_tx_buffer_state *info;
 	bool is_gso = skb_is_gso(skb);
 	u32 idx = tx->req & tx->mask;
 	struct gve_tx_dma_buf *buf;
-	int last_mapped = 0;
 	u64 addr;
 	u32 len;
 	int i;
@@ -528,20 +521,19 @@ static int gve_tx_add_skb_no_copy(struct gve_priv *priv, struct gve_tx_ring *tx,
 	pkt_desc = &tx->desc[idx];
 
 	l4_hdr_offset = skb_checksum_start_offset(skb);
-	/* If the skb is gso, then we want the tcp header in the first segment
-	 * otherwise we want the linear portion of the skb (which will contain
-	 * the checksum because skb->csum_start and skb->csum_offset are given
-	 * relative to skb->head) in the first segment.
+	/* If the skb is gso, then we want only up to the tcp header in the first segment
+	 * to efficiently replicate on each segment otherwise we want the linear portion
+	 * of the skb (which will contain the checksum because skb->csum_start and
+	 * skb->csum_offset are given relative to skb->head) in the first segment.
 	 */
-	hlen = is_gso ? l4_hdr_offset + tcp_hdrlen(skb) :
-			skb_headlen(skb);
+	hlen = is_gso ? l4_hdr_offset + tcp_hdrlen(skb) : skb_headlen(skb);
 	len = skb_headlen(skb);
 
 	info->skb =  skb;
 
 	addr = dma_map_single(tx->dev, skb->data, len, DMA_TO_DEVICE);
 	if (unlikely(dma_mapping_error(tx->dev, addr))) {
-		priv->dma_mapping_error++;
+		tx->dma_mapping_error++;
 		goto drop;
 	}
 	buf = &info->buf;
@@ -559,28 +551,28 @@ static int gve_tx_add_skb_no_copy(struct gve_priv *priv, struct gve_tx_ring *tx,
 
 		len -= hlen;
 		addr += hlen;
-		seg_desc = &tx->desc[(tx->req + 1) & tx->mask];
-		seg_idx_bias = 2;
+		idx = (tx->req + 1) & tx->mask;
+		seg_desc = &tx->desc[idx];
 		gve_tx_fill_seg_desc(seg_desc, skb, is_gso, len, addr);
 	} else {
-		seg_idx_bias = 1;
 		gve_tx_fill_pkt_desc(pkt_desc, skb, is_gso, l4_hdr_offset,
 				     1 + payload_nfrags, hlen, addr);
 	}
 
-	for (i = 0; i < payload_nfrags - (seg_idx_bias - 1); i++) {
-		const skb_frag_t* frag = &shinfo->frags[i];
+	for (i = 0; i < shinfo->nr_frags; i++) {
+		const skb_frag_t *frag = &shinfo->frags[i];
 
-		idx = (tx->req + i + seg_idx_bias) & tx->mask;
+		idx = (idx + 1) & tx->mask;
 		seg_desc = &tx->desc[idx];
 		len = skb_frag_size(frag);
 		addr = skb_frag_dma_map(tx->dev, frag, 0, len, DMA_TO_DEVICE);
 		if (unlikely(dma_mapping_error(tx->dev, addr))) {
-			priv->dma_mapping_error++;
+			tx->dma_mapping_error++;
 			goto unmap_drop;
 		}
 		buf = &tx->info[idx].buf;
-		dma_unmap_len_set(buf, len, -len);
+		tx->info[idx].skb = NULL;
+		dma_unmap_len_set(buf, len, len);
 		dma_unmap_addr_set(buf, dma, addr);
 
 		gve_tx_fill_seg_desc(seg_desc, skb, is_gso, len, addr);
@@ -589,10 +581,10 @@ static int gve_tx_add_skb_no_copy(struct gve_priv *priv, struct gve_tx_ring *tx,
 	return 1 + payload_nfrags;
 
 unmap_drop:
-	i--;
-	for (last_mapped = i + seg_idx_bias; last_mapped >= 0; last_mapped--) {
-		idx = (tx->req + last_mapped) & tx->mask;
-		gve_tx_unmap_buf(tx->dev, &tx->info[idx].buf);
+	i += (payload_nfrags == shinfo->nr_frags ? 1 : 2);
+	while (i--) {
+		idx--;
+		gve_tx_unmap_buf(tx->dev, &tx->info[idx & tx->mask]);
 	}
 drop:
 	tx->dropped_pkt++;
@@ -605,7 +597,7 @@ netdev_tx_t gve_tx(struct sk_buff *skb, struct net_device *dev)
 	struct gve_tx_ring *tx;
 	int nsegs;
 
-	WARN(skb_get_queue_mapping(skb) >= priv->tx_cfg.num_queues,
+	WARN(skb_get_queue_mapping(skb) > priv->tx_cfg.num_queues,
 	     "skb queue index out of range");
 	tx = &priv->tx[skb_get_queue_mapping(skb)];
 	if (unlikely(gve_maybe_stop_tx(tx, skb))) {
@@ -614,10 +606,6 @@ netdev_tx_t gve_tx(struct sk_buff *skb, struct net_device *dev)
 		 * may have added descriptors without ringing the doorbell.
 		 */
 
-		/* Ensure tx descs from a prior gve_tx are visible before
-		 * ringing doorbell.
-		 */
-		dma_wmb();
 		gve_tx_put_doorbell(priv, tx->q_resources, tx->req);
 		return NETDEV_TX_BUSY;
 	}
@@ -630,18 +618,17 @@ netdev_tx_t gve_tx(struct sk_buff *skb, struct net_device *dev)
 	if (nsegs) {
 		netdev_tx_sent_queue(tx->netdev_txq, skb->len);
 		skb_tx_timestamp(skb);
+		tx->req += nsegs;
+	} else {
+		dev_kfree_skb_any(skb);
 	}
-
-	/* Give packets to NIC. Even if this packet failed to send the doorbell
-	 * might need to be rung because of xmit_more.
-	 */
-	tx->req += nsegs;
 
 	if (!netif_xmit_stopped(tx->netdev_txq) && netdev_xmit_more())
 		return NETDEV_TX_OK;
 
-	/* Ensure tx descs are visible before ringing doorbell */
-	dma_wmb();
+	/* Give packets to NIC. Even if this packet failed to send the doorbell
+	 * might need to be rung because of xmit_more.
+	 */
 	gve_tx_put_doorbell(priv, tx->q_resources, tx->req);
 	return NETDEV_TX_OK;
 }
@@ -668,29 +655,27 @@ static int gve_clean_tx_done(struct gve_priv *priv, struct gve_tx_ring *tx,
 
 		/* Unmap the buffer */
 		if (tx->raw_addressing)
-			gve_tx_unmap_buf(tx->dev, &tx->info[idx].buf);
+			gve_tx_unmap_buf(tx->dev, info);
+		tx->done++;
 		/* Mark as free */
 		if (skb) {
 			info->skb = NULL;
 			bytes += skb->len;
 			pkts++;
 			dev_consume_skb_any(skb);
-			if (!tx->raw_addressing) {
-				/* FIFO free */
-				for (i = 0; i < ARRAY_SIZE(info->iov); i++) {
-					space_freed += info->iov[i].iov_len +
-						       info->iov[i].iov_padding;
-					info->iov[i].iov_len = 0;
-					info->iov[i].iov_padding = 0;
-				}
+			if (tx->raw_addressing)
+				continue;
+			/* FIFO free */
+			for (i = 0; i < ARRAY_SIZE(info->iov); i++) {
+				space_freed += info->iov[i].iov_len + info->iov[i].iov_padding;
+				info->iov[i].iov_len = 0;
+				info->iov[i].iov_padding = 0;
 			}
 		}
-		tx->done++;
 	}
 
-	if (!tx->raw_addressing) {
+	if (!tx->raw_addressing)
 		gve_tx_free_fifo(&tx->tx_fifo, space_freed);
-	}
 	u64_stats_update_begin(&tx->statss);
 	tx->bytes_done += bytes;
 	tx->pkt_done += pkts;
