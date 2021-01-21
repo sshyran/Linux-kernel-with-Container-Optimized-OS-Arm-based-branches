@@ -3832,10 +3832,12 @@ int dev_direct_xmit(struct sk_buff *skb, u16 queue_id)
 
 	local_bh_disable();
 
+	dev_xmit_recursion_inc();
 	HARD_TX_LOCK(dev, txq, smp_processor_id());
 	if (!netif_xmit_frozen_or_drv_stopped(txq))
 		ret = netdev_start_xmit(skb, dev, txq, false);
 	HARD_TX_UNLOCK(dev, txq);
+	dev_xmit_recursion_dec();
 
 	local_bh_enable();
 
@@ -5227,7 +5229,7 @@ static void flush_backlog(struct work_struct *work)
 	skb_queue_walk_safe(&sd->input_pkt_queue, skb, tmp) {
 		if (skb->dev->reg_state == NETREG_UNREGISTERING) {
 			__skb_unlink(skb, &sd->input_pkt_queue);
-			kfree_skb(skb);
+			dev_kfree_skb_irq(skb);
 			input_queue_head_incr(sd);
 		}
 	}
@@ -5600,12 +5602,13 @@ static void napi_skb_free_stolen_head(struct sk_buff *skb)
 	kmem_cache_free(skbuff_head_cache, skb);
 }
 
-static gro_result_t napi_skb_finish(gro_result_t ret, struct sk_buff *skb)
+static gro_result_t napi_skb_finish(struct napi_struct *napi,
+				    struct sk_buff *skb,
+				    gro_result_t ret)
 {
 	switch (ret) {
 	case GRO_NORMAL:
-		if (netif_receive_skb_internal(skb))
-			ret = GRO_DROP;
+		gro_normal_one(napi, skb);
 		break;
 
 	case GRO_DROP:
@@ -5637,7 +5640,7 @@ gro_result_t napi_gro_receive(struct napi_struct *napi, struct sk_buff *skb)
 
 	skb_gro_reset_offset(skb);
 
-	ret = napi_skb_finish(dev_gro_receive(napi, skb), skb);
+	ret = napi_skb_finish(napi, skb, dev_gro_receive(napi, skb));
 	trace_napi_gro_receive_exit(ret);
 
 	return ret;
@@ -6228,12 +6231,13 @@ void netif_napi_add(struct net_device *dev, struct napi_struct *napi,
 		netdev_err_once(dev, "%s() called with weight %d\n", __func__,
 				weight);
 	napi->weight = weight;
-	list_add(&napi->dev_list, &dev->napi_list);
 	napi->dev = dev;
 #ifdef CONFIG_NETPOLL
 	napi->poll_owner = -1;
 #endif
 	set_bit(NAPI_STATE_SCHED, &napi->state);
+	set_bit(NAPI_STATE_NPSVC, &napi->state);
+	list_add_rcu(&napi->dev_list, &dev->napi_list);
 	napi_hash_add(napi);
 }
 EXPORT_SYMBOL(netif_napi_add);
@@ -8237,7 +8241,7 @@ int dev_get_port_parent_id(struct net_device *dev,
 		if (!first.id_len)
 			first = *ppid;
 		else if (memcmp(&first, ppid, sizeof(*ppid)))
-			return -ENODATA;
+			return -EOPNOTSUPP;
 	}
 
 	return err;
@@ -9114,6 +9118,13 @@ int register_netdevice(struct net_device *dev)
 		rcu_barrier();
 
 		dev->reg_state = NETREG_UNREGISTERED;
+		/* We should put the kobject that hold in
+		 * netdev_unregister_kobject(), otherwise
+		 * the net device cannot be freed when
+		 * driver calls free_netdev(), because the
+		 * kobject is being hold.
+		 */
+		kobject_put(&dev->dev.kobj);
 	}
 	/*
 	 *	Prevent userspace races by waiting until the network

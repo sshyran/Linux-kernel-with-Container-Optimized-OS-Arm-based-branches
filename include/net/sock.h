@@ -849,6 +849,8 @@ static inline int sk_memalloc_socks(void)
 {
 	return static_branch_unlikely(&memalloc_socks_key);
 }
+
+void __receive_sock(struct file *file);
 #else
 
 static inline int sk_memalloc_socks(void)
@@ -856,6 +858,8 @@ static inline int sk_memalloc_socks(void)
 	return 0;
 }
 
+static inline void __receive_sock(struct file *file)
+{ }
 #endif
 
 static inline gfp_t sk_gfp_mask(const struct sock *sk, gfp_t gfp_mask)
@@ -905,11 +909,11 @@ static inline void __sk_add_backlog(struct sock *sk, struct sk_buff *skb)
 	skb_dst_force(skb);
 
 	if (!sk->sk_backlog.tail)
-		sk->sk_backlog.head = skb;
+		WRITE_ONCE(sk->sk_backlog.head, skb);
 	else
 		sk->sk_backlog.tail->next = skb;
 
-	sk->sk_backlog.tail = skb;
+	WRITE_ONCE(sk->sk_backlog.tail, skb);
 	skb->next = NULL;
 }
 
@@ -1617,6 +1621,7 @@ void sock_rfree(struct sk_buff *skb);
 void sock_efree(struct sk_buff *skb);
 #ifdef CONFIG_INET
 void sock_edemux(struct sk_buff *skb);
+void sock_pfree(struct sk_buff *skb);
 #else
 #define sock_edemux sock_efree
 #endif
@@ -1803,7 +1808,6 @@ static inline int sk_rx_queue_get(const struct sock *sk)
 
 static inline void sk_set_socket(struct sock *sk, struct socket *sock)
 {
-	sk_tx_queue_clear(sk);
 	sk->sk_socket = sock;
 }
 
@@ -2481,16 +2485,14 @@ void sock_net_set(struct sock *sk, struct net *net)
 	write_pnet(&sk->sk_net, net);
 }
 
-static inline struct sock *skb_steal_sock(struct sk_buff *skb)
+static inline bool
+skb_sk_is_prefetched(struct sk_buff *skb)
 {
-	if (skb->sk) {
-		struct sock *sk = skb->sk;
-
-		skb->destructor = NULL;
-		skb->sk = NULL;
-		return sk;
-	}
-	return NULL;
+#ifdef CONFIG_INET
+	return skb->destructor == sock_pfree;
+#else
+	return false;
+#endif /* CONFIG_INET */
 }
 
 /* This helper checks if a socket is a full socket,
@@ -2499,6 +2501,35 @@ static inline struct sock *skb_steal_sock(struct sk_buff *skb)
 static inline bool sk_fullsock(const struct sock *sk)
 {
 	return (1 << sk->sk_state) & ~(TCPF_TIME_WAIT | TCPF_NEW_SYN_RECV);
+}
+
+static inline bool
+sk_is_refcounted(struct sock *sk)
+{
+	/* Only full sockets have sk->sk_flags. */
+	return !sk_fullsock(sk) || !sock_flag(sk, SOCK_RCU_FREE);
+}
+
+/**
+ * skb_steal_sock
+ * @skb to steal the socket from
+ * @refcounted is set to true if the socket is reference-counted
+ */
+static inline struct sock *
+skb_steal_sock(struct sk_buff *skb, bool *refcounted)
+{
+	if (skb->sk) {
+		struct sock *sk = skb->sk;
+
+		*refcounted = true;
+		if (skb_sk_is_prefetched(skb))
+			*refcounted = sk_is_refcounted(sk);
+		skb->destructor = NULL;
+		skb->sk = NULL;
+		return sk;
+	}
+	*refcounted = false;
+	return NULL;
 }
 
 /* Checks if this SKB belongs to an HW offloaded socket

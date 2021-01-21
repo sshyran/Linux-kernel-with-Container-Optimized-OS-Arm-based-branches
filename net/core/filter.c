@@ -2644,6 +2644,19 @@ static const struct bpf_func_proto bpf_msg_pop_data_proto = {
 	.arg4_type	= ARG_ANYTHING,
 };
 
+#ifdef CONFIG_CGROUP_NET_CLASSID
+BPF_CALL_0(bpf_get_cgroup_classid_curr)
+{
+	return __task_get_classid(current);
+}
+
+static const struct bpf_func_proto bpf_get_cgroup_classid_curr_proto = {
+	.func		= bpf_get_cgroup_classid_curr,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+};
+#endif
+
 BPF_CALL_1(bpf_get_cgroup_classid, const struct sk_buff *, skb)
 {
 	return task_get_classid(skb);
@@ -4186,6 +4199,18 @@ static const struct bpf_func_proto bpf_get_socket_cookie_sock_addr_proto = {
 	.arg1_type	= ARG_PTR_TO_CTX,
 };
 
+BPF_CALL_1(bpf_get_socket_cookie_sock, struct sock *, ctx)
+{
+	return sock_gen_cookie(ctx);
+}
+
+static const struct bpf_func_proto bpf_get_socket_cookie_sock_proto = {
+	.func		= bpf_get_socket_cookie_sock,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_CTX,
+};
+
 BPF_CALL_1(bpf_get_socket_cookie_sock_ops, struct bpf_sock_ops_kern *, ctx)
 {
 	return sock_gen_cookie(ctx->sk);
@@ -4196,6 +4221,39 @@ static const struct bpf_func_proto bpf_get_socket_cookie_sock_ops_proto = {
 	.gpl_only	= false,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_CTX,
+};
+
+static u64 __bpf_get_netns_cookie(struct sock *sk)
+{
+#ifdef CONFIG_NET_NS
+	return net_gen_cookie(sk ? sk->sk_net.net : &init_net);
+#else
+	return 0;
+#endif
+}
+
+BPF_CALL_1(bpf_get_netns_cookie_sock, struct sock *, ctx)
+{
+	return __bpf_get_netns_cookie(ctx);
+}
+
+static const struct bpf_func_proto bpf_get_netns_cookie_sock_proto = {
+	.func		= bpf_get_netns_cookie_sock,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_CTX_OR_NULL,
+};
+
+BPF_CALL_1(bpf_get_netns_cookie_sock_addr, struct bpf_sock_addr_kern *, ctx)
+{
+	return __bpf_get_netns_cookie(ctx ? ctx->sk : NULL);
+}
+
+static const struct bpf_func_proto bpf_get_netns_cookie_sock_addr_proto = {
+	.func		= bpf_get_netns_cookie_sock_addr,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type	= ARG_PTR_TO_CTX_OR_NULL,
 };
 
 BPF_CALL_1(bpf_get_socket_uid, struct sk_buff *, skb)
@@ -4216,8 +4274,8 @@ static const struct bpf_func_proto bpf_get_socket_uid_proto = {
 	.arg1_type      = ARG_PTR_TO_CTX,
 };
 
-BPF_CALL_5(bpf_sockopt_event_output, struct bpf_sock_ops_kern *, bpf_sock,
-	   struct bpf_map *, map, u64, flags, void *, data, u64, size)
+BPF_CALL_5(bpf_event_output_data, void *, ctx, struct bpf_map *, map, u64, flags,
+	   void *, data, u64, size)
 {
 	if (unlikely(flags & ~(BPF_F_INDEX_MASK)))
 		return -EINVAL;
@@ -4225,8 +4283,8 @@ BPF_CALL_5(bpf_sockopt_event_output, struct bpf_sock_ops_kern *, bpf_sock,
 	return bpf_event_output(map, flags, data, size, NULL, 0, NULL);
 }
 
-static const struct bpf_func_proto bpf_sockopt_event_output_proto =  {
-	.func		= bpf_sockopt_event_output,
+static const struct bpf_func_proto bpf_event_output_data_proto =  {
+	.func		= bpf_event_output_data,
 	.gpl_only       = true,
 	.ret_type       = RET_INTEGER,
 	.arg1_type      = ARG_PTR_TO_CTX,
@@ -4270,7 +4328,8 @@ BPF_CALL_5(bpf_setsockopt, struct bpf_sock_ops_kern *, bpf_sock,
 				cmpxchg(&sk->sk_pacing_status,
 					SK_PACING_NONE,
 					SK_PACING_NEEDED);
-			sk->sk_max_pacing_rate = (val == ~0U) ? ~0UL : val;
+			sk->sk_max_pacing_rate = (val == ~0U) ?
+						 ~0UL : (unsigned int)val;
 			sk->sk_pacing_rate = min(sk->sk_pacing_rate,
 						 sk->sk_max_pacing_rate);
 			break;
@@ -4650,6 +4709,7 @@ static int bpf_ipv4_fib_lookup(struct net *net, struct bpf_fib_lookup *params,
 	fl4.saddr = params->ipv4_src;
 	fl4.fl4_sport = params->sport;
 	fl4.fl4_dport = params->dport;
+	fl4.flowi4_multipath_hash = 0;
 
 	if (flags & BPF_FIB_LOOKUP_DIRECT) {
 		u32 tbid = l3mdev_fib_table_rcu(dev) ? : RT_TABLE_MAIN;
@@ -5412,8 +5472,7 @@ static const struct bpf_func_proto bpf_sk_lookup_udp_proto = {
 
 BPF_CALL_1(bpf_sk_release, struct sock *, sk)
 {
-	/* Only full sockets have sk->sk_flags. */
-	if (!sk_fullsock(sk) || !sock_flag(sk, SOCK_RCU_FREE))
+	if (sk_is_refcounted(sk))
 		sock_gen_put(sk);
 	return 0;
 }
@@ -5730,12 +5789,16 @@ BPF_CALL_1(bpf_skb_ecn_set_ce, struct sk_buff *, skb)
 {
 	unsigned int iphdr_len;
 
-	if (skb->protocol == cpu_to_be16(ETH_P_IP))
+	switch (skb_protocol(skb, true)) {
+	case cpu_to_be16(ETH_P_IP):
 		iphdr_len = sizeof(struct iphdr);
-	else if (skb->protocol == cpu_to_be16(ETH_P_IPV6))
+		break;
+	case cpu_to_be16(ETH_P_IPV6):
 		iphdr_len = sizeof(struct ipv6hdr);
-	else
+		break;
+	default:
 		return 0;
+	}
 
 	if (skb_headlen(skb) < iphdr_len)
 		return 0;
@@ -5929,6 +5992,36 @@ static const struct bpf_func_proto bpf_tcp_gen_syncookie_proto = {
 	.arg5_type	= ARG_CONST_SIZE,
 };
 
+BPF_CALL_3(bpf_sk_assign, struct sk_buff *, skb, struct sock *, sk, u64, flags)
+{
+	if (flags != 0)
+		return -EINVAL;
+	if (!skb_at_tc_ingress(skb))
+		return -EOPNOTSUPP;
+	if (unlikely(dev_net(skb->dev) != sock_net(sk)))
+		return -ENETUNREACH;
+	if (unlikely(sk_fullsock(sk) && sk->sk_reuseport))
+		return -ESOCKTNOSUPPORT;
+	if (sk_is_refcounted(sk) &&
+	    unlikely(!refcount_inc_not_zero(&sk->sk_refcnt)))
+		return -ENOENT;
+
+	skb_orphan(skb);
+	skb->sk = sk;
+	skb->destructor = sock_pfree;
+
+	return 0;
+}
+
+static const struct bpf_func_proto bpf_sk_assign_proto = {
+	.func		= bpf_sk_assign,
+	.gpl_only	= false,
+	.ret_type	= RET_INTEGER,
+	.arg1_type      = ARG_PTR_TO_CTX,
+	.arg2_type      = ARG_PTR_TO_SOCK_COMMON,
+	.arg3_type	= ARG_ANYTHING,
+};
+
 #endif /* CONFIG_INET */
 
 bool bpf_helper_changes_pkt_data(void *func)
@@ -6005,6 +6098,8 @@ bpf_base_func_proto(enum bpf_func_id func_id)
 		return &bpf_spin_unlock_proto;
 	case BPF_FUNC_trace_printk:
 		return bpf_get_trace_printk_proto();
+	case BPF_FUNC_jiffies64:
+		return &bpf_jiffies64_proto;
 	default:
 		return NULL;
 	}
@@ -6021,6 +6116,20 @@ sock_filter_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_get_current_uid_gid_proto;
 	case BPF_FUNC_get_local_storage:
 		return &bpf_get_local_storage_proto;
+	case BPF_FUNC_get_socket_cookie:
+		return &bpf_get_socket_cookie_sock_proto;
+	case BPF_FUNC_get_netns_cookie:
+		return &bpf_get_netns_cookie_sock_proto;
+	case BPF_FUNC_perf_event_output:
+		return &bpf_event_output_data_proto;
+	case BPF_FUNC_get_current_pid_tgid:
+		return &bpf_get_current_pid_tgid_proto;
+	case BPF_FUNC_get_current_comm:
+		return &bpf_get_current_comm_proto;
+#ifdef CONFIG_CGROUP_NET_CLASSID
+	case BPF_FUNC_get_cgroup_classid:
+		return &bpf_get_cgroup_classid_curr_proto;
+#endif
 	default:
 		return bpf_base_func_proto(func_id);
 	}
@@ -6045,8 +6154,20 @@ sock_addr_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		}
 	case BPF_FUNC_get_socket_cookie:
 		return &bpf_get_socket_cookie_sock_addr_proto;
+	case BPF_FUNC_get_netns_cookie:
+		return &bpf_get_netns_cookie_sock_addr_proto;
 	case BPF_FUNC_get_local_storage:
 		return &bpf_get_local_storage_proto;
+	case BPF_FUNC_perf_event_output:
+		return &bpf_event_output_data_proto;
+	case BPF_FUNC_get_current_pid_tgid:
+		return &bpf_get_current_pid_tgid_proto;
+	case BPF_FUNC_get_current_comm:
+		return &bpf_get_current_comm_proto;
+#ifdef CONFIG_CGROUP_NET_CLASSID
+	case BPF_FUNC_get_cgroup_classid:
+		return &bpf_get_cgroup_classid_curr_proto;
+#endif
 #ifdef CONFIG_INET
 	case BPF_FUNC_sk_lookup_tcp:
 		return &bpf_sock_addr_sk_lookup_tcp_proto;
@@ -6220,6 +6341,8 @@ tc_cls_act_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_skb_ecn_set_ce_proto;
 	case BPF_FUNC_tcp_gen_syncookie:
 		return &bpf_tcp_gen_syncookie_proto;
+	case BPF_FUNC_sk_assign:
+		return &bpf_sk_assign_proto;
 #endif
 	default:
 		return bpf_base_func_proto(func_id);
@@ -6289,7 +6412,7 @@ sock_ops_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 	case BPF_FUNC_get_local_storage:
 		return &bpf_get_local_storage_proto;
 	case BPF_FUNC_perf_event_output:
-		return &bpf_sockopt_event_output_proto;
+		return &bpf_event_output_data_proto;
 	case BPF_FUNC_sk_storage_get:
 		return &bpf_sk_storage_get_proto;
 	case BPF_FUNC_sk_storage_delete:
@@ -6324,6 +6447,16 @@ sk_msg_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog)
 		return &bpf_msg_push_data_proto;
 	case BPF_FUNC_msg_pop_data:
 		return &bpf_msg_pop_data_proto;
+	case BPF_FUNC_perf_event_output:
+		return &bpf_event_output_data_proto;
+	case BPF_FUNC_get_current_uid_gid:
+		return &bpf_get_current_uid_gid_proto;
+	case BPF_FUNC_get_current_pid_tgid:
+		return &bpf_get_current_pid_tgid_proto;
+#ifdef CONFIG_CGROUP_NET_CLASSID
+	case BPF_FUNC_get_cgroup_classid:
+		return &bpf_get_cgroup_classid_curr_proto;
+#endif
 	default:
 		return bpf_base_func_proto(func_id);
 	}
@@ -6786,8 +6919,6 @@ static int bpf_gen_ld_abs(const struct bpf_insn *orig,
 	bool indirect = BPF_MODE(orig->code) == BPF_IND;
 	struct bpf_insn *insn = insn_buf;
 
-	/* We're guaranteed here that CTX is in R6. */
-	*insn++ = BPF_MOV64_REG(BPF_REG_1, BPF_REG_CTX);
 	if (!indirect) {
 		*insn++ = BPF_MOV64_IMM(BPF_REG_2, orig->imm);
 	} else {
@@ -6795,6 +6926,8 @@ static int bpf_gen_ld_abs(const struct bpf_insn *orig,
 		if (orig->imm)
 			*insn++ = BPF_ALU64_IMM(BPF_ADD, BPF_REG_2, orig->imm);
 	}
+	/* We're guaranteed here that CTX is in R6. */
+	*insn++ = BPF_MOV64_REG(BPF_REG_1, BPF_REG_CTX);
 
 	switch (BPF_SIZE(orig->code)) {
 	case BPF_B:
@@ -6930,6 +7063,8 @@ static bool sock_addr_is_valid_access(int off, int size,
 		switch (prog->expected_attach_type) {
 		case BPF_CGROUP_INET4_BIND:
 		case BPF_CGROUP_INET4_CONNECT:
+		case BPF_CGROUP_INET4_GETPEERNAME:
+		case BPF_CGROUP_INET4_GETSOCKNAME:
 		case BPF_CGROUP_UDP4_SENDMSG:
 		case BPF_CGROUP_UDP4_RECVMSG:
 			break;
@@ -6941,6 +7076,8 @@ static bool sock_addr_is_valid_access(int off, int size,
 		switch (prog->expected_attach_type) {
 		case BPF_CGROUP_INET6_BIND:
 		case BPF_CGROUP_INET6_CONNECT:
+		case BPF_CGROUP_INET6_GETPEERNAME:
+		case BPF_CGROUP_INET6_GETSOCKNAME:
 		case BPF_CGROUP_UDP6_SENDMSG:
 		case BPF_CGROUP_UDP6_RECVMSG:
 			break;
@@ -8006,6 +8143,43 @@ static u32 sock_ops_convert_ctx_access(enum bpf_access_type type,
 				      offsetof(OBJ, OBJ_FIELD));	      \
 	} while (0)
 
+#define SOCK_OPS_GET_SK()							      \
+	do {								      \
+		int fullsock_reg = si->dst_reg, reg = BPF_REG_9, jmp = 1;     \
+		if (si->dst_reg == reg || si->src_reg == reg)		      \
+			reg--;						      \
+		if (si->dst_reg == reg || si->src_reg == reg)		      \
+			reg--;						      \
+		if (si->dst_reg == si->src_reg) {			      \
+			*insn++ = BPF_STX_MEM(BPF_DW, si->src_reg, reg,	      \
+					  offsetof(struct bpf_sock_ops_kern,  \
+					  temp));			      \
+			fullsock_reg = reg;				      \
+			jmp += 2;					      \
+		}							      \
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(			      \
+						struct bpf_sock_ops_kern,     \
+						is_fullsock),		      \
+				      fullsock_reg, si->src_reg,	      \
+				      offsetof(struct bpf_sock_ops_kern,      \
+					       is_fullsock));		      \
+		*insn++ = BPF_JMP_IMM(BPF_JEQ, fullsock_reg, 0, jmp);	      \
+		if (si->dst_reg == si->src_reg)				      \
+			*insn++ = BPF_LDX_MEM(BPF_DW, reg, si->src_reg,	      \
+				      offsetof(struct bpf_sock_ops_kern,      \
+				      temp));				      \
+		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(			      \
+						struct bpf_sock_ops_kern, sk),\
+				      si->dst_reg, si->src_reg,		      \
+				      offsetof(struct bpf_sock_ops_kern, sk));\
+		if (si->dst_reg == si->src_reg)	{			      \
+			*insn++ = BPF_JMP_A(1);				      \
+			*insn++ = BPF_LDX_MEM(BPF_DW, reg, si->src_reg,	      \
+				      offsetof(struct bpf_sock_ops_kern,      \
+				      temp));				      \
+		}							      \
+	} while (0)
+
 #define SOCK_OPS_GET_TCP_SOCK_FIELD(FIELD) \
 		SOCK_OPS_GET_FIELD(FIELD, FIELD, struct tcp_sock)
 
@@ -8290,17 +8464,7 @@ static u32 sock_ops_convert_ctx_access(enum bpf_access_type type,
 		SOCK_OPS_GET_TCP_SOCK_FIELD(bytes_acked);
 		break;
 	case offsetof(struct bpf_sock_ops, sk):
-		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(
-						struct bpf_sock_ops_kern,
-						is_fullsock),
-				      si->dst_reg, si->src_reg,
-				      offsetof(struct bpf_sock_ops_kern,
-					       is_fullsock));
-		*insn++ = BPF_JMP_IMM(BPF_JEQ, si->dst_reg, 0, 1);
-		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(
-						struct bpf_sock_ops_kern, sk),
-				      si->dst_reg, si->src_reg,
-				      offsetof(struct bpf_sock_ops_kern, sk));
+		SOCK_OPS_GET_SK();
 		break;
 	}
 	return insn - insn_buf;

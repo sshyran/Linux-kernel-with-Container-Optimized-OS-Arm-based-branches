@@ -1160,6 +1160,10 @@ static int check_subprogs(struct bpf_verifier_env *env)
 	for (i = 0; i < insn_cnt; i++) {
 		u8 code = insn[i].code;
 
+		if (code == (BPF_JMP | BPF_CALL) &&
+		    insn[i].imm == BPF_FUNC_tail_call &&
+		    insn[i].src_reg != BPF_PSEUDO_CALL)
+			subprog[cur_subprog].has_tail_call = true;
 		if (BPF_CLASS(code) != BPF_JMP && BPF_CLASS(code) != BPF_JMP32)
 			goto next;
 		if (BPF_OP(code) == BPF_EXIT || BPF_OP(code) == BPF_CALL)
@@ -2612,6 +2616,31 @@ static int check_max_stack_depth(struct bpf_verifier_env *env)
 	int ret_prog[MAX_CALL_FRAMES];
 
 process_func:
+	/* protect against potential stack overflow that might happen when
+	 * bpf2bpf calls get combined with tailcalls. Limit the caller's stack
+	 * depth for such case down to 256 so that the worst case scenario
+	 * would result in 8k stack size (32 which is tailcall limit * 256 =
+	 * 8k).
+	 *
+	 * To get the idea what might happen, see an example:
+	 * func1 -> sub rsp, 128
+	 *  subfunc1 -> sub rsp, 256
+	 *  tailcall1 -> add rsp, 256
+	 *   func2 -> sub rsp, 192 (total stack size = 128 + 192 = 320)
+	 *   subfunc2 -> sub rsp, 64
+	 *   subfunc22 -> sub rsp, 128
+	 *   tailcall2 -> add rsp, 128
+	 *    func3 -> sub rsp, 32 (total stack size 128 + 192 + 64 + 32 = 416)
+	 *
+	 * tailcall will unwind the current stack frame but it will not get rid
+	 * of caller's stack as shown on the example above.
+	 */
+	if (idx && subprog[idx].has_tail_call && depth >= 256) {
+		verbose(env,
+			"tail_calls are not allowed when call stack of previous frames is %d bytes. Too large\n",
+			depth);
+		return -EACCES;
+	}
 	/* round up to 32-bytes, since this is granularity
 	 * of interpreter stack size
 	 */
@@ -3283,13 +3312,17 @@ static int check_func_arg(struct bpf_verifier_env *env, u32 regno,
 		expected_type = CONST_PTR_TO_MAP;
 		if (type != expected_type)
 			goto err_type;
-	} else if (arg_type == ARG_PTR_TO_CTX) {
+	} else if (arg_type == ARG_PTR_TO_CTX ||
+		   arg_type == ARG_PTR_TO_CTX_OR_NULL) {
 		expected_type = PTR_TO_CTX;
-		if (type != expected_type)
-			goto err_type;
-		err = check_ctx_reg(env, reg, regno);
-		if (err < 0)
-			return err;
+		if (!(register_is_null(reg) &&
+		      arg_type == ARG_PTR_TO_CTX_OR_NULL)) {
+			if (type != expected_type)
+				goto err_type;
+			err = check_ctx_reg(env, reg, regno);
+			if (err < 0)
+				return err;
+		}
 	} else if (arg_type == ARG_PTR_TO_SOCK_COMMON) {
 		expected_type = PTR_TO_SOCK_COMMON;
 		/* Any sk pointer can be ARG_PTR_TO_SOCK_COMMON */
@@ -4398,6 +4431,10 @@ static int adjust_ptr_min_max_vals(struct bpf_verifier_env *env,
 			dst, reg_type_str[ptr_reg->type]);
 		return -EACCES;
 	case CONST_PTR_TO_MAP:
+		/* smin_val represents the known value */
+		if (known && smin_val == 0 && opcode == BPF_ADD)
+			break;
+		/* fall-through */
 	case PTR_TO_PACKET_END:
 	case PTR_TO_SOCKET:
 	case PTR_TO_SOCKET_OR_NULL:
@@ -6191,7 +6228,11 @@ static int check_return_code(struct bpf_verifier_env *env)
 	switch (env->prog->type) {
 	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
 		if (env->prog->expected_attach_type == BPF_CGROUP_UDP4_RECVMSG ||
-		    env->prog->expected_attach_type == BPF_CGROUP_UDP6_RECVMSG)
+		    env->prog->expected_attach_type == BPF_CGROUP_UDP6_RECVMSG ||
+		    env->prog->expected_attach_type == BPF_CGROUP_INET4_GETPEERNAME ||
+		    env->prog->expected_attach_type == BPF_CGROUP_INET6_GETPEERNAME ||
+		    env->prog->expected_attach_type == BPF_CGROUP_INET4_GETSOCKNAME ||
+		    env->prog->expected_attach_type == BPF_CGROUP_INET6_GETSOCKNAME)
 			range = tnum_range(1, 1);
 		break;
 	case BPF_PROG_TYPE_CGROUP_SKB:
@@ -9217,6 +9258,30 @@ static int fixup_bpf_calls(struct bpf_verifier_env *env)
 			}
 
 			goto patch_call_imm;
+		}
+
+		if (prog->jit_requested && BITS_PER_LONG == 64 &&
+		    insn->imm == BPF_FUNC_jiffies64) {
+			struct bpf_insn ld_jiffies_addr[2] = {
+				BPF_LD_IMM64(BPF_REG_0,
+					     (unsigned long)&jiffies),
+			};
+
+			insn_buf[0] = ld_jiffies_addr[0];
+			insn_buf[1] = ld_jiffies_addr[1];
+			insn_buf[2] = BPF_LDX_MEM(BPF_DW, BPF_REG_0,
+						  BPF_REG_0, 0);
+			cnt = 3;
+
+			new_prog = bpf_patch_insn_data(env, i + delta, insn_buf,
+						       cnt);
+			if (!new_prog)
+				return -ENOMEM;
+
+			delta    += cnt - 1;
+			env->prog = prog = new_prog;
+			insn      = new_prog->insnsi + i + delta;
+			continue;
 		}
 
 patch_call_imm:

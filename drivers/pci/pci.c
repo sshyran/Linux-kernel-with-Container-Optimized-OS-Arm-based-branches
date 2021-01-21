@@ -802,7 +802,9 @@ static inline bool platform_pci_need_resume(struct pci_dev *dev)
 
 static inline bool platform_pci_bridge_d3(struct pci_dev *dev)
 {
-	return pci_platform_pm ? pci_platform_pm->bridge_d3(dev) : false;
+	if (pci_platform_pm && pci_platform_pm->bridge_d3)
+		return pci_platform_pm->bridge_d3(dev);
+	return false;
 }
 
 /**
@@ -4608,8 +4610,7 @@ static int pci_pm_reset(struct pci_dev *dev, int probe)
  * pcie_wait_for_link_delay - Wait until link is active or inactive
  * @pdev: Bridge device
  * @active: waiting for active or inactive?
- * @delay: Delay to wait after link has become active (in ms). Specify %0
- *	   for no delay.
+ * @delay: Delay to wait after link has become active (in ms)
  *
  * Use this to wait till link becomes active or inactive.
  */
@@ -4650,7 +4651,7 @@ static bool pcie_wait_for_link_delay(struct pci_dev *pdev, bool active,
 		msleep(10);
 		timeout -= 10;
 	}
-	if (active && ret && delay)
+	if (active && ret)
 		msleep(delay);
 	else if (ret != active)
 		pci_info(pdev, "Data Link Layer Link Active not %s in 1000 msec\n",
@@ -4771,28 +4772,17 @@ void pci_bridge_wait_for_secondary_bus(struct pci_dev *dev)
 	if (!pcie_downstream_port(dev))
 		return;
 
-	/*
-	 * Per PCIe r5.0, sec 6.6.1, for downstream ports that support
-	 * speeds > 5 GT/s, we must wait for link training to complete
-	 * before the mandatory delay.
-	 *
-	 * We can only tell when link training completes via DLL Link
-	 * Active, which is required for downstream ports that support
-	 * speeds > 5 GT/s (sec 7.5.3.6).  Unfortunately some common
-	 * devices do not implement Link Active reporting even when it's
-	 * required, so we'll check for that directly instead of checking
-	 * the supported link speed.  We assume devices without Link Active
-	 * reporting can train in 100 ms regardless of speed.
-	 */
-	if (dev->link_active_reporting) {
-		pci_dbg(dev, "waiting for link to train\n");
-		if (!pcie_wait_for_link_delay(dev, true, 0)) {
+	if (pcie_get_speed_cap(dev) <= PCIE_SPEED_5_0GT) {
+		pci_dbg(dev, "waiting %d ms for downstream link\n", delay);
+		msleep(delay);
+	} else {
+		pci_dbg(dev, "waiting %d ms for downstream link, after activation\n",
+			delay);
+		if (!pcie_wait_for_link_delay(dev, true, delay)) {
 			/* Did not train, no need to wait any further */
 			return;
 		}
 	}
-	pci_dbg(child, "waiting %d ms to become accessible\n", delay);
-	msleep(delay);
 
 	if (!pci_device_is_present(child)) {
 		pci_dbg(child, "waiting additional %d ms to become accessible\n", delay);
@@ -6139,19 +6129,21 @@ static resource_size_t pci_specified_resource_alignment(struct pci_dev *dev,
 	while (*p) {
 		count = 0;
 		if (sscanf(p, "%d%n", &align_order, &count) == 1 &&
-							p[count] == '@') {
+		    p[count] == '@') {
 			p += count + 1;
+			if (align_order > 63) {
+				pr_err("PCI: Invalid requested alignment (order %d)\n",
+				       align_order);
+				align_order = PAGE_SHIFT;
+			}
 		} else {
-			align_order = -1;
+			align_order = PAGE_SHIFT;
 		}
 
 		ret = pci_dev_str_match(dev, p, &p);
 		if (ret == 1) {
 			*resize = true;
-			if (align_order == -1)
-				align = PAGE_SIZE;
-			else
-				align = 1 << align_order;
+			align = 1ULL << align_order;
 			break;
 		} else if (ret < 0) {
 			pr_err("PCI: Can't parse resource_alignment parameter: %s\n",
