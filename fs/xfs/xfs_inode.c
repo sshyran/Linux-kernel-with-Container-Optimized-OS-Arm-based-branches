@@ -731,7 +731,7 @@ out_unlock:
  * To ensure that some other process does not grab the inode that
  * was allocated during the first call to xfs_ialloc(), this routine
  * also returns the [locked] bp pointing to the head of the freelist
- * as ialloc_context.  The caller should hold this buffer across
+ * as ialloc_context.  The caller should hold this buffer acrossinode_init_owner
  * the commit and pass it back into this routine on the second call.
  *
  * If we are allocating quota inodes, we do not have a parent inode
@@ -750,6 +750,7 @@ xfs_ialloc(
 	xfs_buf_t	**ialloc_context,
 	xfs_inode_t	**ipp)
 {
+	struct inode	 *dir = pip ? VFS_I(pip) : NULL;
 	struct xfs_mount *mp = tp->t_mountp;
 	xfs_ino_t	ino;
 	xfs_inode_t	*ip;
@@ -811,10 +812,13 @@ xfs_ialloc(
 	inode->i_rdev = rdev;
 	xfs_set_projid(ip, prid);
 
-	if (pip && XFS_INHERIT_GID(pip)) {
-		ip->i_d.di_gid = pip->i_d.di_gid;
-		if ((VFS_I(pip)->i_mode & S_ISGID) && S_ISDIR(mode))
-			inode->i_mode |= S_ISGID;
+	if (dir && !(dir->i_mode & S_ISGID) &&
+	    (mp->m_flags & XFS_MOUNT_GRPID)) {
+		inode->i_uid = current_fsuid();
+		inode->i_gid = dir->i_gid;
+		inode->i_mode = mode;
+	} else {
+		inode_init_owner(inode, dir, mode);
 	}
 
 	/*
