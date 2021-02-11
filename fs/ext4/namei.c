@@ -2616,7 +2616,8 @@ retry:
 		err = ext4_add_nondir(handle, dentry, inode);
 		if (!err && IS_DIRSYNC(dir))
 			ext4_handle_sync(handle);
-		ext4_fc_track_create(handle, dentry);
+		if (!err)
+			ext4_fc_track_create(handle, dentry);
 	}
 	if (handle)
 		ext4_journal_stop(handle);
