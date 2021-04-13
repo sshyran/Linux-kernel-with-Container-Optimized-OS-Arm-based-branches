@@ -1476,6 +1476,11 @@ void security_file_free(struct file *file)
 	}
 }
 
+void security_file_pre_free(struct file *file)
+{
+	call_void_hook(file_pre_free_security, file);
+}
+
 int security_file_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	return call_int_hook(file_ioctl, 0, file, cmd, arg);
@@ -1589,6 +1594,11 @@ int security_task_alloc(struct task_struct *task, unsigned long clone_flags)
 	if (unlikely(rc))
 		security_task_free(task);
 	return rc;
+}
+
+void security_task_post_alloc(struct task_struct *task)
+{
+	call_void_hook(task_post_alloc, task);
 }
 
 void security_task_free(struct task_struct *task)
@@ -1801,6 +1811,11 @@ int security_task_kill(struct task_struct *p, struct kernel_siginfo *info,
 			int sig, const struct cred *cred)
 {
 	return call_int_hook(task_kill, 0, p, info, sig, cred);
+}
+
+void security_task_exit(struct task_struct *p)
+{
+	call_void_hook(task_exit, p);
 }
 
 int security_task_prctl(int option, unsigned long arg2, unsigned long arg3,

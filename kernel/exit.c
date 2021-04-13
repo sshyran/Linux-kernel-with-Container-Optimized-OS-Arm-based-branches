@@ -64,6 +64,7 @@
 #include <linux/rcuwait.h>
 #include <linux/compat.h>
 #include <linux/io_uring.h>
+#include <linux/security.h>
 
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
@@ -786,6 +787,8 @@ void __noreturn do_exit(long code)
 #endif
 		if (tsk->mm)
 			setmax_mm_hiwater_rss(&tsk->signal->maxrss, tsk->mm);
+
+		security_task_exit(tsk);
 	}
 	acct_collect(code, group_dead);
 	if (group_dead)

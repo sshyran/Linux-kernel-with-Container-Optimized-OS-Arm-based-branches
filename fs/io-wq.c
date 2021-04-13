@@ -500,8 +500,10 @@ static void io_impersonate_work(struct io_worker *worker,
 		current->signal->rlim[RLIMIT_FSIZE].rlim_cur = RLIM_INFINITY;
 	io_wq_switch_blkcg(worker, work);
 #ifdef CONFIG_AUDIT
-	current->loginuid = work->identity->loginuid;
-	current->sessionid = work->identity->sessionid;
+	if (current->audit) {
+		current->audit->loginuid = work->identity->loginuid;
+		current->audit->sessionid = work->identity->sessionid;
+	}
 #endif
 }
 
@@ -516,8 +518,10 @@ static void io_assign_current_work(struct io_worker *worker,
 	}
 
 #ifdef CONFIG_AUDIT
-	current->loginuid = KUIDT_INIT(AUDIT_UID_UNSET);
-	current->sessionid = AUDIT_SID_UNSET;
+	if (current->audit) {
+		current->audit->loginuid = KUIDT_INIT(AUDIT_UID_UNSET);
+		current->audit->sessionid = AUDIT_SID_UNSET;
+	}
 #endif
 
 	spin_lock_irq(&worker->lock);
