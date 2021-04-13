@@ -1124,8 +1124,8 @@ static void io_init_identity(struct io_identity *id)
 	id->fs = current->fs;
 	id->fsize = rlimit(RLIMIT_FSIZE);
 #ifdef CONFIG_AUDIT
-	id->loginuid = current->loginuid;
-	id->sessionid = current->sessionid;
+	id->loginuid = audit_get_loginuid(current);
+	id->sessionid = audit_get_sessionid(current);
 #endif
 	refcount_set(&id->count, 1);
 }
@@ -1378,8 +1378,8 @@ static bool io_grab_identity(struct io_kiocb *req)
 		req->work.flags |= IO_WQ_WORK_CREDS;
 	}
 #ifdef CONFIG_AUDIT
-	if (!uid_eq(current->loginuid, id->loginuid) ||
-	    current->sessionid != id->sessionid)
+	if (!uid_eq(audit_get_loginuid(current), id->loginuid) ||
+	    audit_get_sessionid(current) != id->sessionid)
 		return false;
 #endif
 	if (!(req->work.flags & IO_WQ_WORK_FS) &&
@@ -6867,8 +6867,10 @@ static int io_sq_thread(void *data)
 			}
 			io_sq_thread_associate_blkcg(ctx, &cur_css);
 #ifdef CONFIG_AUDIT
-			current->loginuid = ctx->loginuid;
-			current->sessionid = ctx->sessionid;
+			if (current->audit) {
+				current->audit->loginuid = ctx->loginuid;
+				current->audit->sessionid = ctx->sessionid;
+			}
 #endif
 
 			ret |= __io_sq_thread(ctx, start_jiffies, cap_entries);
@@ -9354,8 +9356,8 @@ static int io_uring_create(unsigned entries, struct io_uring_params *p,
 	ctx->user = user;
 	ctx->creds = get_current_cred();
 #ifdef CONFIG_AUDIT
-	ctx->loginuid = current->loginuid;
-	ctx->sessionid = current->sessionid;
+	ctx->loginuid = audit_get_loginuid(current);
+	ctx->sessionid = audit_get_sessionid(current);
 #endif
 	ctx->sqo_task = get_task_struct(current);
 

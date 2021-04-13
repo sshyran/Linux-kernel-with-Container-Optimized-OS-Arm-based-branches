@@ -513,6 +513,10 @@
  * @file_free_security:
  *	Deallocate and free any security structures stored in file->f_security.
  *	@file contains the file structure being modified.
+ * @file_pre_free_security:
+ *	Perform any logging or LSM state updates for a file being deleted
+ *	using fields of the file before they have been cleared.
+ *	@file contains the file structure being freed
  * @file_ioctl:
  *	@file contains the file structure.
  *	@cmd contains the operation to perform.
@@ -589,6 +593,10 @@
  *	@clone_flags contains the flags indicating what should be shared.
  *	Handle allocation of task-related resources.
  *	Returns a zero on success, negative values on failure.
+ * @task_post_alloc:
+ *	@task task being allocated.
+ *	Handle allocation of task-related resources after all task fields are
+ *	filled in.
  * @task_free:
  *	@task task about to be freed.
  *	Handle release of task-related resources. (Note that this can be called
@@ -759,6 +767,9 @@
  *	@cred contains the cred of the process where the signal originated, or
  *	NULL if the current task is the originator.
  *	Return 0 if permission is granted.
+ * @task_exit:
+ *      Called early when a task is exiting before all state is lost.
+ *      @p contains the task_struct for process.
  * @task_prctl:
  *	Check permission before performing a process control operation on the
  *	current process.
