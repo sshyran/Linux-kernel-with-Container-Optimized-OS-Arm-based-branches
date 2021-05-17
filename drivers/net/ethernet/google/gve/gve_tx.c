@@ -242,7 +242,8 @@ abort_with_fifo:
         if (!tx->raw_addressing)
 	        gve_tx_fifo_release(priv, &tx->tx_fifo);
 abort_with_qpl:
-	gve_unassign_qpl(priv, tx->tx_fifo.qpl->id);
+	if (!tx->raw_addressing)
+		gve_unassign_qpl(priv, tx->tx_fifo.qpl->id);
 abort_with_desc:
 	dma_free_coherent(hdev, bytes, tx->desc, tx->bus);
 	tx->desc = NULL;
