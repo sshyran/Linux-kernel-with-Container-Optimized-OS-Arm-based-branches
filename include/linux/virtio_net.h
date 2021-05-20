@@ -65,18 +65,14 @@ static inline int virtio_net_hdr_to_skb(struct sk_buff *skb,
 	skb_reset_mac_header(skb);
 
 	if (hdr->flags & VIRTIO_NET_HDR_F_NEEDS_CSUM) {
-		u32 start = __virtio16_to_cpu(little_endian, hdr->csum_start);
-		u32 off = __virtio16_to_cpu(little_endian, hdr->csum_offset);
-		u32 needed = start + max_t(u32, thlen, off + sizeof(__sum16));
-
-		if (!pskb_may_pull(skb, needed))
-			return -EINVAL;
+		u16 start = __virtio16_to_cpu(little_endian, hdr->csum_start);
+		u16 off = __virtio16_to_cpu(little_endian, hdr->csum_offset);
 
 		if (!skb_partial_csum_set(skb, start, off))
 			return -EINVAL;
 
 		p_off = skb_transport_offset(skb) + thlen;
-		if (!pskb_may_pull(skb, p_off))
+		if (p_off > skb_headlen(skb))
 			return -EINVAL;
 	} else {
 		/* gso packets without NEEDS_CSUM do not set transport_offset.
@@ -106,14 +102,14 @@ retry:
 			}
 
 			p_off = keys.control.thoff + thlen;
-			if (!pskb_may_pull(skb, p_off) ||
+			if (p_off > skb_headlen(skb) ||
 			    keys.basic.ip_proto != ip_proto)
 				return -EINVAL;
 
 			skb_set_transport_header(skb, keys.control.thoff);
 		} else if (gso_type) {
 			p_off = thlen;
-			if (!pskb_may_pull(skb, p_off))
+			if (p_off > skb_headlen(skb))
 				return -EINVAL;
 		}
 	}
