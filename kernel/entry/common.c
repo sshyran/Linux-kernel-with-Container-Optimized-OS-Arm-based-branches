@@ -65,6 +65,8 @@ static long syscall_trace_enter(struct pt_regs *regs, long syscall,
 
 	if (unlikely(ti_work & _TIF_SYSCALL_TRACEPOINT))
 		trace_sys_enter(regs, syscall);
+	/* tace_sys_enter might have changed the syscall number */
+	syscall = syscall_get_nr(current, regs);
 
 	syscall_enter_audit(regs, syscall);
 
