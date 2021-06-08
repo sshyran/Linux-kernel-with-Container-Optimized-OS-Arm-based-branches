@@ -998,6 +998,9 @@ struct kvm_arch {
 	struct kvm_x86_msr_filter __rcu *msr_filter;
 
 	struct kvm_pmu_event_filter *pmu_event_filter;
+
+	u32 hypercall_exit_enabled;
+
 	struct task_struct *nx_lpage_recovery_thread;
 
 	/*
