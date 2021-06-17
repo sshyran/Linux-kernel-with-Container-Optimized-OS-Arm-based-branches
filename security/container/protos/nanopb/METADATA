@@ -1,0 +1,20 @@
+name: "nanopb"
+description: "Nanopb is a C library for encoding and decoding protocol buffers."
+
+third_party {
+  url {
+    type: GIT
+    value: "https://github.com/nanopb/nanopb/"
+  }
+  version: "0.3.9.1"
+  last_upgrade_date: {
+    year: 2018
+    month: 10
+    day: 9
+  }
+  license_type: NOTICE
+  security {
+    category: REVIEWED_AND_SECURE
+    note: "https://buganizer.corp.google.com/u/0/issues/19409596, https://buganizer.corp.google.com/u/0/issues/120506242"
+  }
+}
