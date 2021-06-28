@@ -689,9 +689,9 @@ static int populate_proc_common(schema_Process *proc, char *uuid,
 		proc->exec_session_id = cid;
 
 	/* Add information about pid in different namespaces */
-	proc->pid = task_pid_nr(task);
+	proc->pid = task_tgid_nr(task);
 	proc->parent_pid = task_ppid_nr(task);
-	proc->container_pid = task_pid_nr_ns(task, ns);
+	proc->container_pid = task_tgid_nr_ns(task, ns);
 	proc->container_parent_pid = task_ppid_nr_ns(task, ns);
 
 	return populate_proc_uuid_common(proc, uuid, uuid_size, parent_uuid,
