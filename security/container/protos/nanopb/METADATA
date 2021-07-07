@@ -16,5 +16,8 @@ third_party {
   security {
     category: REVIEWED_AND_SECURE
     note: "https://buganizer.corp.google.com/u/0/issues/19409596, https://buganizer.corp.google.com/u/0/issues/120506242"
+    tag: "NVD-CPE2.3:cpe:/a:nanopb_project:nanopb"
+    tag: "vuln_reporting:buganizer_component:588910"
+    tag: "vuln_reporting:contact_emails:"  # Blunderbuss will assign bugs.
   }
 }
