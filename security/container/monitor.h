@@ -71,7 +71,7 @@ extern struct container_stats csm_stats;
 int csm_update_config_from_buffer(void *data, size_t size);
 
 /* send event to userland */
-int csm_sendeventproto(const pb_field_t fields[], schema_Event *event);
+int csm_sendeventproto(const pb_msgdesc_t *fields, schema_Event *event);
 
 /* process events functions */
 int csm_bprm_check_security(struct linux_binprm *bprm);
