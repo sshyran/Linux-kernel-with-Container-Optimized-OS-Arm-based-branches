@@ -93,7 +93,7 @@ static int csm_sendmsg(int type, const void *buf, size_t len)
 	return perr;
 }
 
-static bool csm_get_expected_size(size_t *size, const pb_field_t fields[],
+static bool csm_get_expected_size(size_t *size, const pb_msgdesc_t *fields,
 				    const void *src_struct)
 {
 	schema_Event *event;
@@ -124,7 +124,7 @@ other:
 }
 
 static struct msg_work_data *csm_encodeproto(size_t size,
-					     const pb_field_t fields[],
+					     const pb_msgdesc_t *fields,
 					     const void *src_struct)
 {
 	pb_ostream_t pos;
@@ -150,7 +150,7 @@ static struct msg_work_data *csm_encodeproto(size_t size,
 	return wd;
 }
 
-static int csm_sendproto(int type, const pb_field_t fields[],
+static int csm_sendproto(int type, const pb_msgdesc_t *fields,
 			 const void *src_struct)
 {
 	int err = 0;
@@ -206,7 +206,7 @@ static void csm_sendmsg_pipe_handler(struct work_struct *work)
 	kfree(wd);
 }
 
-int csm_sendeventproto(const pb_field_t fields[], schema_Event *event)
+int csm_sendeventproto(const pb_msgdesc_t *fields, schema_Event *event)
 {
 	/* Last check before generating and sending an event. */
 	if (!csm_enabled)
