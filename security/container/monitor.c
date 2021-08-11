@@ -555,6 +555,7 @@ static ssize_t csm_container_write(struct file *file, const char __user *buf,
 		goto out;
 
 	/* Correct the container-id and feed the event to pipe */
+	report.has_container = true;
 	report.container.container_id = cid;
 	report.container.init_uuid.funcs.encode = pb_encode_uuid_field;
 	report.container.init_uuid.arg = uuid;
@@ -565,6 +566,7 @@ static ssize_t csm_container_write(struct file *file, const char __user *buf,
 	set_container_encode_callbacks(container);
 
 	event.which_event = schema_Event_container_tag;
+	event.event.container.has_container = true;
 
 	err = csm_sendeventproto(schema_Event_fields, &event);
 	if (!err)

@@ -562,6 +562,7 @@ static int fill_file_description(struct file *file, schema_File *schema_file,
 		/* Local socket */
 		err = kernel_getsockname(socket, (struct sockaddr *)&saddr);
 		if (err >= 0) {
+			socketfs->has_local = true;
 			fill_socket_description(&saddr, &fdata->local,
 						&socketfs->local);
 		}
@@ -569,6 +570,7 @@ static int fill_file_description(struct file *file, schema_File *schema_file,
 		/* Remote socket, might not be connected. */
 		err = kernel_getpeername(socket, (struct sockaddr *)&saddr);
 		if (err >= 0) {
+			socketfs->has_remote = true;
 			fill_socket_description(&saddr, &fdata->remote,
 						&socketfs->remote);
 		}
@@ -621,6 +623,7 @@ static int fill_stream_description(schema_Descriptor *desc, int fd,
 	}
 
 	desc->mode = file_inode(file)->i_mode;
+	desc->has_file = true;
 	err = fill_file_description(file, &desc->file, fdata);
 
 end:
@@ -745,21 +748,27 @@ int csm_bprm_check_security(struct linux_binprm *bprm)
 	proc->creation_timestamp = ktime_get_real_ns();
 
 	/* Provide information about the launched binary. */
+	proc->has_binary = true;
 	err = fill_file_description(bprm->file, &proc->binary, &path_data);
 	if (err)
 		goto out_free_buf;
 
 	/* Information about streams */
+	proc->has_streams = true;
+
+	proc->streams.has_stdin = true;
 	err = fill_stream_description(&proc->streams.stdin, STDIN_FILENO,
 				      &stdin_data);
 	if (err)
 		goto out_free_buf;
 
+	proc->streams.has_stdout = true;
 	err = fill_stream_description(&proc->streams.stdout, STDOUT_FILENO,
 				      &stdout_data);
 	if (err)
 		goto out_free_buf;
 
+	proc->streams.has_stderr = true;
 	err = fill_stream_description(&proc->streams.stderr, STDERR_FILENO,
 				      &stderr_data);
 	if (err)
@@ -782,6 +791,8 @@ int csm_bprm_check_security(struct linux_binprm *bprm)
 	proc->args.envp.arg = &argv_ctx;
 
 	event.which_event = schema_Event_execute_tag;
+	event.event.execute.has_proc = true;
+	proc->has_args = true;
 
 	/*
 	 * Configurations options are checked when computing the serialized
@@ -833,6 +844,7 @@ void csm_task_post_alloc(struct task_struct *task)
 					sizeof(parent_uuid), task);
 
 	event.which_event = schema_Event_clone_tag;
+	event.event.clone.has_proc = true;
 	err = csm_sendeventproto(schema_Event_fields, &event);
 	if (err)
 		pr_err("csm_sendeventproto returned %d on exit\n", err);
@@ -913,6 +925,8 @@ int csm_mprotect(struct vm_area_struct *vma, unsigned long reqprot,
 	memexec->end_addr = vma->vm_end;
 
 	event.which_event = schema_Event_memexec_tag;
+	event.event.memexec.has_proc = true;
+	event.event.memexec.has_mapped_file = true;
 
 	err = csm_sendeventproto(schema_Event_fields, &event);
 	if (err)
@@ -972,6 +986,8 @@ int csm_mmap_file(struct file *file, unsigned long reqprot,
 	memexec->mmap_flags = flags;
 	memexec->action = schema_MemoryExecEvent_Action_MMAP_FILE;
 	event.which_event = schema_Event_memexec_tag;
+	event.event.memexec.has_proc = true;
+	event.event.memexec.has_mapped_file = true;
 
 	err = csm_sendeventproto(schema_Event_fields, &event);
 	if (err)
@@ -1098,6 +1114,7 @@ void delayed_enumerate_processes(struct work_struct *work)
 			goto next;
 		}
 
+		proc->has_binary = true;
 		err = fill_file_description(exe_file, &proc->binary,
 					    &path_data);
 		if (err) {
@@ -1119,6 +1136,7 @@ void delayed_enumerate_processes(struct work_struct *work)
 			goto next;
 
 		event.which_event = schema_Event_enumproc_tag;
+		event.event.execute.has_proc = true;
 		err = csm_sendeventproto(schema_Event_fields,
 					 &event);
 		if (err) {
