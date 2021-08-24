@@ -703,7 +703,7 @@ int csm_bprm_check_security(struct linux_binprm *bprm)
 	char uuid[PROCESS_UUID_SIZE];
 	char parent_uuid[PROCESS_UUID_SIZE];
 	int err;
-	schema_Event event = schema_Event_init_zero;
+	schema_Event event = {};
 	schema_Process *proc;
 	struct string_arr_ctx argv_ctx;
 	void *stack = NULL, *ctx = NULL;
@@ -819,7 +819,7 @@ void csm_task_post_alloc(struct task_struct *task)
 	int err;
 	char uuid[PROCESS_UUID_SIZE];
 	char parent_uuid[PROCESS_UUID_SIZE];
-	schema_Event event = schema_Event_init_zero;
+	schema_Event event = {};
 	schema_Process *proc;
 
 	if (!csm_execute_enabled ||
@@ -845,7 +845,7 @@ void csm_task_post_alloc(struct task_struct *task)
 void csm_task_exit(struct task_struct *task)
 {
 	int err;
-	schema_Event event = schema_Event_init_zero;
+	schema_Event event = {};
 	schema_ExitEvent *exit;
 	char uuid[PROCESS_UUID_SIZE];
 
@@ -878,7 +878,7 @@ int csm_mprotect(struct vm_area_struct *vma, unsigned long reqprot,
 	char uuid[PROCESS_UUID_SIZE];
 	char parent_uuid[PROCESS_UUID_SIZE];
 	int err;
-	schema_Event event = schema_Event_init_zero;
+	schema_Event event = {};
 	schema_MemoryExecEvent *memexec;
 	u64 cid;
 	struct file_data path_data = {};
@@ -933,7 +933,7 @@ int csm_mmap_file(struct file *file, unsigned long reqprot,
 	char uuid[PROCESS_UUID_SIZE];
 	char parent_uuid[PROCESS_UUID_SIZE];
 	int err;
-	schema_Event event = schema_Event_init_zero;
+	schema_Event event = {};
 	schema_MemoryExecEvent *memexec;
 	struct file *exe_file;
 	u64 cid;
@@ -1088,7 +1088,7 @@ void delayed_enumerate_processes(struct work_struct *work)
 		char parent_uuid[PROCESS_UUID_SIZE];
 		struct file *exe_file = NULL;
 		struct file_data path_data = {};
-		schema_Event event = schema_Event_init_zero;
+		schema_Event event = {};
 		schema_Process *proc = &event.event.enumproc.proc;
 
 		exe_file = get_task_exe_file(task);
