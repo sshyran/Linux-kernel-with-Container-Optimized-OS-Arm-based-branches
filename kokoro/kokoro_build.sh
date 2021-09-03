@@ -4,9 +4,8 @@ set -ex
 
 cd "${KOKORO_ARTIFACTS_DIR}/git/kernel"
 env | sort
-ls -la /snap/bin/
 uname -a
-ls -la /
-sudo /snap/bin/gcloud docker -- pull gcr.io/cloud-kernel-build/cos-kernel-devenv
+which gcloud
+sudo gcloud docker -- pull gcr.io/cloud-kernel-build/cos-kernel-devenv
 sudo docker run --rm \
   -v $(pwd):/src -w /src gcr.io/cloud-kernel-build/cos-kernel-devenv -k
