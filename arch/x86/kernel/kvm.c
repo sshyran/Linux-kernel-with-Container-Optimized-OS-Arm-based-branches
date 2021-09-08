@@ -27,6 +27,7 @@
 #include <linux/nmi.h>
 #include <linux/swait.h>
 #include <linux/syscore_ops.h>
+#include <linux/cc_platform.h>
 #include <linux/efi.h>
 #include <asm/timer.h>
 #include <asm/cpu.h>
