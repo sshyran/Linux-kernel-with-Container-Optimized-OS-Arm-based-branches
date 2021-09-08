@@ -38,7 +38,11 @@
 #include <drm/drm_probe_helper.h>
 #include <linux/mmu_notifier.h>
 #include <linux/suspend.h>
+<<<<<<< HEAD
 #include <linux/fb.h>
+=======
+#include <linux/cc_platform.h>
+>>>>>>> e9d1d2bb75b2 (treewide: Replace the use of mem_encrypt_active() with cc_platform_has())
 
 #include "amdgpu.h"
 #include "amdgpu_irq.h"
@@ -2013,7 +2017,8 @@ static int amdgpu_pci_probe(struct pci_dev *pdev,
 	 * however, SME requires an indirect IOMMU mapping because the encryption
 	 * bit is beyond the DMA mask of the chip.
 	 */
-	if (mem_encrypt_active() && ((flags & AMD_ASIC_MASK) == CHIP_RAVEN)) {
+	if (cc_platform_has(CC_ATTR_MEM_ENCRYPT) &&
+	    ((flags & AMD_ASIC_MASK) == CHIP_RAVEN)) {
 		dev_info(&pdev->dev,
 			 "SME is not compatible with RAVEN\n");
 		return -ENOTSUPP;
