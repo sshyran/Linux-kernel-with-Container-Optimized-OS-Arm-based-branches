@@ -21,5 +21,7 @@ sudo chown -R "$(id -u):$(id -g)" .
 
 # XXX: replace with `make kernelversion > version.full` in the containers
 KERNEL_VERSION="$(ls linux-*.tar.xz | sed s@linux-@@ | sed -E s@-[^-]*.tar.xz@@)"
+KERNEL_VERSION_ARCH="$(ls linux-*.tar.xz | sed s@linux-@@ | sed -E s@.tar.xz@@)"
 
-gsutil cp linux-*.tar.xz "gs://ovt-dev/kernel-builds/${VERSION}/"
+gsutil cp linux-*.tar.xz "gs://ovt-dev/kernel-builds/${KERNEL_VERSION}/"
+gsutil cp kernel/kheaders_data.tar.xz "gs://ovt-dev/kernel-builds/${KERNEL_VERSION}/linux-headers-${KERNEL_VERSION_ARCH}.tar.xz"
