@@ -194,14 +194,14 @@ static int gve_tx_alloc_ring(struct gve_priv *priv, int idx)
 	tx->raw_addressing = priv->queue_format == GVE_GQI_RDA_FORMAT;
 	tx->dev = &priv->pdev->dev;
 	if (!tx->raw_addressing) {
-	        tx->tx_fifo.qpl = gve_assign_tx_qpl(priv);
-	        if (!tx->tx_fifo.qpl)
-		        goto abort_with_desc;
+		tx->tx_fifo.qpl = gve_assign_tx_qpl(priv);
+		if (!tx->tx_fifo.qpl)
+			goto abort_with_desc;
+		/* map Tx FIFO */
+		if (gve_tx_fifo_init(priv, &tx->tx_fifo))
+			goto abort_with_qpl;
+	}
 
-	        /* map Tx FIFO */
-	        if (gve_tx_fifo_init(priv, &tx->tx_fifo))
-        		goto abort_with_qpl;
-        }
 	tx->q_resources =
 		dma_alloc_coherent(hdev,
 				   sizeof(*tx->q_resources),
@@ -218,8 +218,8 @@ static int gve_tx_alloc_ring(struct gve_priv *priv, int idx)
 	return 0;
 
 abort_with_fifo:
-        if (!tx->raw_addressing)
-	        gve_tx_fifo_release(priv, &tx->tx_fifo);
+	if (!tx->raw_addressing)
+		gve_tx_fifo_release(priv, &tx->tx_fifo);
 abort_with_qpl:
 	if (!tx->raw_addressing)
 		gve_unassign_qpl(priv, tx->tx_fifo.qpl->id);
@@ -303,15 +303,15 @@ static inline int gve_skb_fifo_bytes_required(struct gve_tx_ring *tx,
 static void gve_tx_unmap_buf(struct device *dev, struct gve_tx_buffer_state *info)
 {
 	if (info->skb) {
-		dma_unmap_single(dev, dma_unmap_addr(&info->buf, dma),
-				 dma_unmap_len(&info->buf, len),
+		dma_unmap_single(dev, dma_unmap_addr(info, dma),
+				 dma_unmap_len(info, len),
 				 DMA_TO_DEVICE);
-		dma_unmap_len_set(&info->buf, len, 0);
+		dma_unmap_len_set(info, len, 0);
 	} else {
-		dma_unmap_page(dev, dma_unmap_addr(&info->buf, dma),
-			       dma_unmap_len(&info->buf, len),
+		dma_unmap_page(dev, dma_unmap_addr(info, dma),
+			       dma_unmap_len(info, len),
 			       DMA_TO_DEVICE);
-		dma_unmap_len_set(&info->buf, len, 0);
+		dma_unmap_len_set(info, len, 0);
 	}
 }
 
@@ -411,9 +411,8 @@ static void gve_dma_sync_for_device(struct device *dev, dma_addr_t *page_buses,
 	u64 first_page = iov_offset / PAGE_SIZE;
 	u64 page;
 
-	for (page = first_page; page <= last_page; page++) {
+	for (page = first_page; page <= last_page; page++)
 		dma_sync_single_for_device(dev, page_buses[page], PAGE_SIZE, DMA_TO_DEVICE);
-	}
 }
 
 static int gve_tx_add_skb_copy(struct gve_priv *priv, struct gve_tx_ring *tx, struct sk_buff *skb)
@@ -492,7 +491,6 @@ static int gve_tx_add_skb_no_copy(struct gve_priv *priv, struct gve_tx_ring *tx,
 	struct gve_tx_buffer_state *info;
 	bool is_gso = skb_is_gso(skb);
 	u32 idx = tx->req & tx->mask;
-	struct gve_tx_dma_buf *buf;
 	u64 addr;
 	u32 len;
 	int i;
@@ -516,9 +514,8 @@ static int gve_tx_add_skb_no_copy(struct gve_priv *priv, struct gve_tx_ring *tx,
 		tx->dma_mapping_error++;
 		goto drop;
 	}
-	buf = &info->buf;
-	dma_unmap_len_set(buf, len, len);
-	dma_unmap_addr_set(buf, dma, addr);
+	dma_unmap_len_set(info, len, len);
+	dma_unmap_addr_set(info, dma, addr);
 
 	payload_nfrags = shinfo->nr_frags;
 	if (hlen < len) {
@@ -550,10 +547,9 @@ static int gve_tx_add_skb_no_copy(struct gve_priv *priv, struct gve_tx_ring *tx,
 			tx->dma_mapping_error++;
 			goto unmap_drop;
 		}
-		buf = &tx->info[idx].buf;
 		tx->info[idx].skb = NULL;
-		dma_unmap_len_set(buf, len, len);
-		dma_unmap_addr_set(buf, dma, addr);
+		dma_unmap_len_set(&tx->info[idx], len, len);
+		dma_unmap_addr_set(&tx->info[idx], dma, addr);
 
 		gve_tx_fill_seg_desc(seg_desc, skb, is_gso, len, addr);
 	}
@@ -577,7 +573,7 @@ netdev_tx_t gve_tx(struct sk_buff *skb, struct net_device *dev)
 	struct gve_tx_ring *tx;
 	int nsegs;
 
-	WARN(skb_get_queue_mapping(skb) > priv->tx_cfg.num_queues,
+	WARN(skb_get_queue_mapping(skb) >= priv->tx_cfg.num_queues,
 	     "skb queue index out of range");
 	tx = &priv->tx[skb_get_queue_mapping(skb)];
 	if (unlikely(gve_maybe_stop_tx(tx, skb))) {
