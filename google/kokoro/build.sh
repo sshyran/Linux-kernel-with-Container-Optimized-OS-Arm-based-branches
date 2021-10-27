@@ -47,7 +47,7 @@ tar --exclude=.git -czf /tmp/${PACKAGE_PREFIX}-${SRC}.tgz .
 for arch in 'x86_64' 'arm64'
 do
   # Build kernel, kernel-headers, debug packges in arch-specific directory
-  "${CONTAINER_CMD[@]}" -k -H -d -A "${arch}" -O "${BUILD_OUTPUT}_${arch}"
+  "${CONTAINER_CMD[@]}" -k -H -d -A "${arch}" -C lakitu_defconfig -O "${BUILD_OUTPUT}_${arch}"
 
   # Fixup permissions
   sudo chown -R "$(id -u):$(id -g)" .
