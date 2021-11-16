@@ -13,7 +13,6 @@ sudo gcloud auth list
 sudo gcloud docker -- pull ${CONTAINER_NAME}
 pwd
 echo ${CONTAINER_CMD}
-exit 0
 echo -n "-cos${KOKORO_BUILD_NUMBER}" > localversion
 # Remove '+' sign from the version
 touch .scmversion
