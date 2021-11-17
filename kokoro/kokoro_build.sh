@@ -26,5 +26,4 @@ do
   KERNEL_VERSION=`${CONTAINER_CMD} kernelrelease | tail -1`
 
   gsutil cp cos-kernel-${KERNEL_VERSION}-${arch}.txz "gs://ovt-dev/kernel-builds/${KERNEL_VERSION}/"
-  #gsutil cp kernel/kheaders_data.tar.xz "gs://ovt-dev/kernel-builds/${KERNEL_VERSION}/linux-headers-${KERNEL_VERSION_ARCH}.tar.xz"
 done
