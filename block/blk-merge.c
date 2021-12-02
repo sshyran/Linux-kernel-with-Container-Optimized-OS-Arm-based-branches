@@ -106,18 +106,15 @@ static struct bio *blk_bio_discard_split(struct request_queue *q,
 static struct bio *blk_bio_write_zeroes_split(struct request_queue *q,
 		struct bio *bio, struct bio_set *bs, unsigned *nsegs)
 {
-	sector_t split;
-
 	*nsegs = 0;
 
-	split = q->limits.max_write_zeroes_sectors;
-	if (split && q->split_alignment)
-		split = round_down(split, q->split_alignment);
-
-	if (!split || bio_sectors(bio) <= split)
+	if (!q->limits.max_write_zeroes_sectors)
 		return NULL;
 
-	return bio_split(bio, split, GFP_NOIO, bs);
+	if (bio_sectors(bio) <= q->limits.max_write_zeroes_sectors)
+		return NULL;
+
+	return bio_split(bio, q->limits.max_write_zeroes_sectors, GFP_NOIO, bs);
 }
 
 static struct bio *blk_bio_write_same_split(struct request_queue *q,
@@ -125,18 +122,15 @@ static struct bio *blk_bio_write_same_split(struct request_queue *q,
 					    struct bio_set *bs,
 					    unsigned *nsegs)
 {
-	sector_t split;
-
 	*nsegs = 1;
 
-	split = q->limits.max_write_same_sectors;
-	if (split && q->split_alignment)
-		split = round_down(split, q->split_alignment);
-
-	if (!split || bio_sectors(bio) <= split)
+	if (!q->limits.max_write_same_sectors)
 		return NULL;
 
-	return bio_split(bio, split, GFP_NOIO, bs);
+	if (bio_sectors(bio) <= q->limits.max_write_same_sectors)
+		return NULL;
+
+	return bio_split(bio, q->limits.max_write_same_sectors, GFP_NOIO, bs);
 }
 
 /*
@@ -255,9 +249,7 @@ static struct bio *blk_bio_segment_split(struct request_queue *q,
 {
 	struct bio_vec bv, bvprv, *bvprvp = NULL;
 	struct bvec_iter iter;
-	unsigned int nsegs = 0, nsegs_aligned = 0;
-	unsigned int sectors = 0, sectors_aligned = 0, before = 0, after = 0;
-	unsigned int sector_alignment = q->split_alignment;
+	unsigned nsegs = 0, sectors = 0;
 	const unsigned max_sectors = get_max_io_size(q, bio);
 	const unsigned max_segs = queue_max_segments(q);
 
@@ -273,31 +265,12 @@ static struct bio *blk_bio_segment_split(struct request_queue *q,
 		    sectors + (bv.bv_len >> 9) <= max_sectors &&
 		    bv.bv_offset + bv.bv_len <= PAGE_SIZE) {
 			nsegs++;
-			before = round_down(sectors, sector_alignment);
-			sectors += (bv.bv_len >> 9);
-			after = round_down(sectors, sector_alignment);
-			if (sector_alignment && before != after) {
-				/* This is a valid split point */
-				nsegs_aligned = nsegs;
-				sectors_aligned = after;
-			}
-			goto next;
-		}
-		if (sector_alignment) {
-			before = round_down(sectors, sector_alignment);
-			after = round_down(sectors + (bv.bv_len >> 9),
-					  sector_alignment);
-			if ((nsegs < max_segs) && before != after &&
-			    ((after - before) << 9) + bv.bv_offset <=  PAGE_SIZE
-			    && after <= max_sectors) {
-				sectors_aligned = after;
-				nsegs_aligned = nsegs + 1;
-			}
-		}
-		if (bvec_split_segs(q, &bv, &nsegs, &sectors, max_segs,
-				    max_sectors))
+			sectors += bv.bv_len >> 9;
+		} else if (bvec_split_segs(q, &bv, &nsegs, &sectors, max_segs,
+					 max_sectors)) {
 			goto split;
-next:
+		}
+
 		bvprv = bv;
 		bvprvp = &bvprv;
 	}
@@ -306,13 +279,7 @@ next:
 	return NULL;
 split:
 	*segs = nsegs;
-	if (sector_alignment && sectors_aligned == 0)
-		return NULL;
-
-	*segs = sector_alignment ? nsegs_aligned : nsegs;
-
-	return bio_split(bio, sector_alignment ? sectors_aligned : sectors,
-			 GFP_NOIO, bs);
+	return bio_split(bio, sectors, GFP_NOIO, bs);
 }
 
 /**
