@@ -29,6 +29,7 @@ echo -n "-${KOKORO_BUILD_NUMBER}.${BRANCH}" > localversion
 touch .scmversion
 echo ${BRANCH}
 
+echo "Archiving source code"
 # Archive source files before building the kernel.
 tar --exclude=.git -czf /tmp/${FILE_PREFIX}-${SRC}.tgz .
 
