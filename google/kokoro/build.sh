@@ -3,8 +3,9 @@
 set -ex
 
 KERNEL_SRC_DIR="${KOKORO_ARTIFACTS_DIR}/git/kernel"
-CONTAINER_NAME="gcr.io/cloud-kernel-build/cos-kernel-devenv"
-CONTAINER_CMD="sudo docker run --rm -v ${KERNEL_SRC_DIR}:/src -w /src ${CONTAINER_NAME} "
+CONTAINER_NAME="gcr.io/cloud-kernel-build/cos-kernel-devenv:v20211123"
+declare -a CONTAINER_CMD
+CONTAINER_CMD=( sudo docker run --rm -v "${KERNEL_SRC_DIR}":/src -w /src "${CONTAINER_NAME}" )
 FILE_PREFIX="cos-kernel"
 SRC="src"
 HEADERS="headers"
@@ -15,19 +16,16 @@ GCS_DIR=""
 KERNEL_VERSION=""
 
 cd "${KOKORO_ARTIFACTS_DIR}/git/kernel"
-env | sort
-uname -a
-which gcloud
-sudo gcloud auth list
 sudo gcloud docker -- pull ${CONTAINER_NAME}
-pwd
 
-echo ${CONTAINER_CMD}
+echo "Using devenv container: ${CONTAINER_NAME}"
 echo -n "-${KOKORO_BUILD_NUMBER}.${BRANCH}" > localversion
+echo "${KOKORO_GIT_COMMIT}" > kernel_commit
 
 # Remove '+' sign from the version
 touch .scmversion
-echo ${BRANCH}
+echo "COS branch: ${BRANCH}"
+echo "Git commit: ${KOKORO_GIT_COMMIT}"
 
 echo "Archiving source code"
 # Archive source files before building the kernel.
@@ -35,23 +33,27 @@ tar --exclude=.git -czf /tmp/${FILE_PREFIX}-${SRC}.tgz .
 
 for arch in 'x86' 'arm64'
 do
-  ${CONTAINER_CMD} -k -H -d -A ${arch} -O ${BUILD_OUTPUT}_${arch}
+  "${CONTAINER_CMD[@]}" -k -H -d -A "${arch}" -O "${BUILD_OUTPUT}_${arch}"
 
   # Fixup permissions
   sudo chown -R "$(id -u):$(id -g)" .
 
-  if [ -z "${KERNEL_VERSION}" ]
+  if [[ -z "${KERNEL_VERSION}" ]]
   then
-    KERNEL_VERSION=`${CONTAINER_CMD} -O ${BUILD_OUTPUT}_${arch} kernelrelease | tail -2 | head -1`
+    KERNEL_VERSION=$("${CONTAINER_CMD[@]}" -O "${BUILD_OUTPUT}_${arch}" kernelrelease | tail -2 | head -1)
   fi
-
-  GCS_DIR=${GCS_PATH}/${KERNEL_VERSION}
-
-  gsutil cp ${FILE_PREFIX}-${KERNEL_VERSION}-${arch}.txz "${GCS_DIR}"/
-  gsutil cp ${FILE_PREFIX}-${HEADERS}-${KERNEL_VERSION}-${arch}.tgz "${GCS_DIR}"/
-  gsutil cp ${FILE_PREFIX}-${DEBUG}-${KERNEL_VERSION}-${arch}.txz "${GCS_DIR}"/
 done
 
+GCS_DIR=${GCS_PATH}/${KERNEL_VERSION}
+
+for arch in 'x86' 'arm64'
+do
+  gsutil cp "${FILE_PREFIX}-${KERNEL_VERSION}-${arch}.txz" "${GCS_DIR}"/
+  gsutil cp "${FILE_PREFIX}-${HEADERS}-${KERNEL_VERSION}-${arch}.tgz" "${GCS_DIR}"/
+  gsutil cp "${FILE_PREFIX}-${DEBUG}-${KERNEL_VERSION}-${arch}.txz" "${GCS_DIR}"/
+done
+gsutil cp kernel_commit "${GCS_DIR}"/
+
 # Rename the source archive with correct kernel version.
-gsutil cp /tmp/${FILE_PREFIX}-${SRC}.tgz "${GCS_DIR}"/${FILE_PREFIX}-${SRC}-${KERNEL_VERSION}.tgz
-rm /tmp/${FILE_PREFIX}-${SRC}.tgz
+gsutil cp "/tmp/${FILE_PREFIX}-${SRC}.tgz" "${GCS_DIR}/${FILE_PREFIX}-${SRC}-${KERNEL_VERSION}.tgz"
+rm "/tmp/${FILE_PREFIX}-${SRC}.tgz"
