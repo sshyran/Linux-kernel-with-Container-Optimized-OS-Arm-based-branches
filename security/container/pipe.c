@@ -54,7 +54,7 @@ static ssize_t csm_user_pipe_write(struct kvec *vecs, size_t vecs_size,
 	}
 
 
-	iov_iter_kvec(&io, ITER_KVEC|WRITE, vecs, vecs_size, total_length);
+	iov_iter_kvec(&io, WRITE, vecs, vecs_size, total_length);
 
 	file_start_write(csm_user_write_pipe);
 	perr = vfs_iter_write(csm_user_write_pipe, &io, &pos, 0);
