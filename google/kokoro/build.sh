@@ -44,7 +44,16 @@ do
   fi
 done
 
-GCS_DIR=${GCS_PATH}/${KERNEL_VERSION}
+if [[ "${KOKORO_JOB_TYPE}" = CONTINUOUS_INTEGRATION ]]; then
+  GCS_DIR="${GCS_PATH}/${KERNEL_VERSION}"
+elif [[ "${KOKORO_JOB_TYPE}" = "PRESUBMIT_GERRIT_ON_BORG" ]]; then
+  # store presubmit artifacts into dedicated folder
+  # so they could be used in further tests/qualification
+  GCS_DIR="${GCS_PATH}/presubmit/${KOKORO_BUILD_ID}"
+else
+  echo "Unknown Kokoro job type: '${KOKORO_JOB_TYPE}'"
+  exit 1
+fi
 
 for arch in 'x86' 'arm64'
 do
