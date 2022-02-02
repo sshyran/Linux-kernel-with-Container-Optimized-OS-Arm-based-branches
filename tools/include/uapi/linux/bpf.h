@@ -3995,6 +3995,9 @@ union bpf_attr {
 	FN(bprm_opts_set),		\
 	FN(ktime_get_coarse_ns),	\
 	FN(ima_inode_hash),		\
+	FN(sock_from_file), /* LAKITU: backport stub, unimplemented */ \
+	FN(check_mtu), /* LAKITU: backport stub, unimplemented */ \
+	FN(for_each_map_elem), /* LAKITU: backport stub, unimplemented */ \
 	/* */
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
