@@ -18,6 +18,8 @@
 #include <linux/seq_file.h>
 #include <linux/string.h>
 #include <linux/sysctl.h>
+#include <overlayfs/overlayfs.h>
+#include <uapi/linux/magic.h>
 
 /* protects csm_*_enabled and configurations. */
 DECLARE_RWSEM(csm_rwsem_config);
@@ -43,6 +45,7 @@ struct container_stats_mapping csm_stats_mapping[] = {
 	{ "EventWritingFailed", &csm_stats.event_writing_failed },
 	{ "SizePickingFailed", &csm_stats.size_picking_failed },
 	{ "PipeAlreadyOpened", &csm_stats.pipe_already_opened },
+	{ "CsmSetxattr", &csm_stats.csm_setxattr },
 };
 
 /*
@@ -622,11 +625,29 @@ static const struct file_operations csm_stats_fops = {
 	.release	= single_release,
 };
 
+static bool is_d_overlayfs_mounted(struct dentry *dentry)
+{
+	struct super_block *mnt_sb;
+
+	if (dentry == NULL || dentry->d_inode == NULL)
+		return false;
+
+	mnt_sb = dentry->d_inode->i_sb;
+	if (mnt_sb == NULL || mnt_sb->s_magic != OVERLAYFS_SUPER_MAGIC)
+		return false;
+
+	return true;
+}
+
 static int csm_setxattr(struct dentry *dentry, const char *name,
 			const void *value, size_t size, int flags)
 {
-	if (csm_enabled && !strcmp(name, XATTR_SECURITY_CSM))
-		return -EPERM;
+	if (csm_enabled &&
+	    (audit_get_contid(current) != AUDIT_CID_UNSET) &&
+	    is_d_overlayfs_mounted(dentry) &&
+	    (strcmp(name, XATTR_SECURITY_CSM) == 0))
+		csm_stats.csm_setxattr++;
+
 	return 0;
 }
 
