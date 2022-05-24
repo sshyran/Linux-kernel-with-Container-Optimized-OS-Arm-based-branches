@@ -55,6 +55,7 @@ struct container_stats {
 	size_t workqueue_failed;
 	size_t size_picking_failed;
 	size_t pipe_already_opened;
+	size_t csm_setxattr;
 };
 
 extern struct container_stats csm_stats;
