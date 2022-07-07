@@ -39,6 +39,7 @@
 struct backing_dev_info;
 struct bio_list;
 struct blk_plug;
+struct bpf_local_storage;
 struct capture_control;
 struct cfs_rq;
 struct fs_struct;
@@ -1320,6 +1321,7 @@ struct task_struct {
 	int				pagefault_disabled;
 #ifdef CONFIG_MMU
 	struct task_struct		*oom_reaper_list;
+	struct timer_list		oom_reaper_timer;
 #endif
 #ifdef CONFIG_VMAP_STACK
 	struct vm_struct		*stack_vm_area;
@@ -1334,6 +1336,10 @@ struct task_struct {
 #ifdef CONFIG_SECURITY
 	/* Used by LSM modules for access restriction: */
 	void				*security;
+#endif
+#ifdef CONFIG_BPF_SYSCALL
+	/* Used by BPF task local storage */
+	struct bpf_local_storage __rcu	*bpf_storage;
 #endif
 
 #ifdef CONFIG_GCC_PLUGIN_STACKLEAK
