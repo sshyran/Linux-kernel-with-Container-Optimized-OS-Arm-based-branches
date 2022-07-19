@@ -704,7 +704,7 @@ static int vmgexit_psc(struct snp_psc_desc *desc)
 		ghcb_set_sw_scratch(ghcb, (u64)__pa(data));
 
 		/* This will advance the shared buffer data points to. */
-		ret = sev_es_ghcb_hv_call(ghcb, true, &ctxt, SVM_VMGEXIT_PSC, 0, 0);
+		ret = sev_es_ghcb_hv_call(ghcb, &ctxt, SVM_VMGEXIT_PSC, 0, 0);
 
 		/*
 		 * Page State Change VMGEXIT can pass error code through
