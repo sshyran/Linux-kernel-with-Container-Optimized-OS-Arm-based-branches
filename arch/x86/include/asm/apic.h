@@ -109,7 +109,7 @@ static inline void native_apic_mem_write(u32 reg, u32 v)
 		       ASM_OUTPUT2("0" (v), "m" (*addr)));
 }
 
-static inline u32 native_apic_mem_read(u32 reg)
+static noinline u32 native_apic_mem_read(u32 reg)
 {
 	return *((volatile u32 *)(APIC_BASE + reg));
 }
