@@ -63,6 +63,23 @@ struct snp_cpuid_table {
  */
 static u16 ghcb_version __ro_after_init;
 
+/*
+ * This may be called early while still running on the initial identity
+ * mapping. Use RIP-relative addressing to obtain the correct address
+ * while running with the initial identity mapping as well as the
+ * switch-over to kernel virtual addresses later.
+ */
+static u16 *get_ghcb_version_ptr(void)
+{
+	void *ptr;
+
+	asm ("lea ghcb_version(%%rip), %0"
+	     : "=r" (ptr)
+	     : "p" (&ghcb_version));
+
+	return (u16 *)ptr;
+}
+
 /* Copy of the SNP firmware's CPUID page. */
 static struct snp_cpuid_table cpuid_table_copy __ro_after_init;
 
@@ -72,9 +89,13 @@ static struct snp_cpuid_table cpuid_table_copy __ro_after_init;
  * invalid/out-of-range leaves. This is needed since all-zero leaves
  * still need to be post-processed.
  */
-static u32 cpuid_std_range_max __ro_after_init;
-static u32 cpuid_hyp_range_max __ro_after_init;
-static u32 cpuid_ext_range_max __ro_after_init;
+struct cpuid_maxes {
+	u32 std_range;
+	u32 hyp_range;
+	u32 ext_range;
+};
+
+static struct cpuid_maxes cpuid_range_maxes __ro_after_init;
 
 static bool __init sev_es_check_cpu_features(void)
 {
@@ -108,7 +129,7 @@ static u64 get_hv_features(void)
 {
 	u64 val;
 
-	if (ghcb_version < 2)
+	if (*get_ghcb_version_ptr() < 2)
 		return 0;
 
 	sev_es_wr_ghcb_msr(GHCB_MSR_HV_FT_REQ);
@@ -153,7 +174,7 @@ static bool sev_es_negotiate_protocol(void)
 	    GHCB_MSR_PROTO_MIN(val) > GHCB_PROTOCOL_MAX)
 		return false;
 
-	ghcb_version = min_t(size_t, GHCB_MSR_PROTO_MAX(val), GHCB_PROTOCOL_MAX);
+	*get_ghcb_version_ptr() = min_t(size_t, GHCB_MSR_PROTO_MAX(val), GHCB_PROTOCOL_MAX);
 
 	return true;
 }
@@ -287,6 +308,17 @@ static const struct snp_cpuid_table *snp_cpuid_get_table(void)
 	asm ("lea cpuid_table_copy(%%rip), %0"
 	     : "=r" (ptr)
 	     : "p" (&cpuid_table_copy));
+
+	return ptr;
+}
+
+static const struct cpuid_maxes *snp_cpuid_get_maxes(void)
+{
+	void *ptr;
+
+	asm ("lea cpuid_range_maxes(%%rip), %0"
+	     : "=r" (ptr)
+	     : "p" (&cpuid_range_maxes));
 
 	return ptr;
 }
@@ -486,6 +518,7 @@ static int snp_cpuid_postprocess(struct cpuid_leaf *leaf)
 static int snp_cpuid(struct cpuid_leaf *leaf)
 {
 	const struct snp_cpuid_table *cpuid_table = snp_cpuid_get_table();
+	const struct cpuid_maxes *maxes = snp_cpuid_get_maxes();
 
 	if (!cpuid_table->count)
 		return -EOPNOTSUPP;
@@ -511,9 +544,9 @@ static int snp_cpuid(struct cpuid_leaf *leaf)
 		leaf->eax = leaf->ebx = leaf->ecx = leaf->edx = 0;
 
 		/* Skip post-processing for out-of-range zero leafs. */
-		if (!(leaf->fn <= cpuid_std_range_max ||
-		      (leaf->fn >= 0x40000000 && leaf->fn <= cpuid_hyp_range_max) ||
-		      (leaf->fn >= 0x80000000 && leaf->fn <= cpuid_ext_range_max)))
+		if (!(leaf->fn <= maxes->std_range ||
+		      (leaf->fn >= 0x40000000 && leaf->fn <= maxes->hyp_range) ||
+		      (leaf->fn >= 0x80000000 && leaf->fn <= maxes->ext_range)))
 			return 0;
 	}
 
@@ -965,6 +998,8 @@ static struct cc_blob_sev_info *find_cc_blob_setup_data(struct boot_params *bp)
 static void __init setup_cpuid_table(const struct cc_blob_sev_info *cc_info)
 {
 	const struct snp_cpuid_table *cpuid_table_fw, *cpuid_table;
+	const struct cpuid_maxes *range_maxes;
+	struct cpuid_maxes local;
 	int i;
 
 	if (!cc_info || !cc_info->cpuid_phys || cc_info->cpuid_len < PAGE_SIZE)
@@ -975,6 +1010,7 @@ static void __init setup_cpuid_table(const struct cc_blob_sev_info *cc_info)
 		sev_es_terminate(SEV_TERM_SET_LINUX, GHCB_TERM_CPUID);
 
 	cpuid_table = snp_cpuid_get_table();
+	range_maxes = snp_cpuid_get_maxes();
 	memcpy((void *)cpuid_table, cpuid_table_fw, sizeof(*cpuid_table));
 
 	/* Initialize CPUID ranges for range-checking. */
@@ -982,10 +1018,11 @@ static void __init setup_cpuid_table(const struct cc_blob_sev_info *cc_info)
 		const struct snp_cpuid_fn *fn = &cpuid_table->fn[i];
 
 		if (fn->eax_in == 0x0)
-			cpuid_std_range_max = fn->eax;
+			local.std_range = fn->eax;
 		else if (fn->eax_in == 0x40000000)
-			cpuid_hyp_range_max = fn->eax;
+			local.hyp_range = fn->eax;
 		else if (fn->eax_in == 0x80000000)
-			cpuid_ext_range_max = fn->eax;
+			local.ext_range = fn->eax;
 	}
+	memcpy((void *)range_maxes, &local, sizeof(*range_maxes));
 }
