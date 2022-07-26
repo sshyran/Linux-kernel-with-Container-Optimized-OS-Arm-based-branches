@@ -18,6 +18,7 @@
 #include <linux/libnvdimm.h>
 #include <linux/vmstat.h>
 #include <linux/kernel.h>
+#include <linux/cc_platform.h>
 
 #include <asm/e820/api.h>
 #include <asm/processor.h>
@@ -1986,7 +1987,7 @@ static int __set_memory_enc_dec(unsigned long addr, int numpages, bool enc)
 	int ret;
 
 	/* Nothing to do if memory encryption is not active */
-	if (!mem_encrypt_active())
+	if (!cc_platform_has(CC_ATTR_MEM_ENCRYPT))
 		return 0;
 
 	/* Should not be working on unaligned addresses */
@@ -2004,10 +2005,12 @@ static int __set_memory_enc_dec(unsigned long addr, int numpages, bool enc)
 	kmap_flush_unused();
 	vm_unmap_aliases();
 
-	/*
-	 * Before changing the encryption attribute, we need to flush caches.
-	 */
-	cpa_flush(&cpa, !this_cpu_has(X86_FEATURE_SME_COHERENT));
+	/* Flush the caches as needed before changing the encryption attribute. */
+	if (x86_platform.guest.enc_tlb_flush_required(enc))
+		cpa_flush(&cpa, x86_platform.guest.enc_cache_flush_required());
+
+	/* Notify hypervisor that we are about to set/clr encryption attribute. */
+	x86_platform.guest.enc_status_change_prepare(addr, numpages, enc);
 
 	ret = __change_page_attr_set_clr(&cpa, 1);
 
@@ -2019,6 +2022,12 @@ static int __set_memory_enc_dec(unsigned long addr, int numpages, bool enc)
 	 * as above.
 	 */
 	cpa_flush(&cpa, 0);
+
+	/* Notify hypervisor that we have successfully set/clr encryption attribute. */
+	if (!ret) {
+		if (!x86_platform.guest.enc_status_change_finish(addr, numpages, enc))
+			ret = -EIO;
+	}
 
 	return ret;
 }

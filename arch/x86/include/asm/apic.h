@@ -111,7 +111,16 @@ static inline void native_apic_mem_write(u32 reg, u32 v)
 
 static inline u32 native_apic_mem_read(u32 reg)
 {
-	return *((volatile u32 *)(APIC_BASE + reg));
+	volatile u32 *addr = (volatile u32 *)(APIC_BASE + reg);
+	u32 out;
+	/*
+	 * This access an MMIO address, which may need to be emulated in some
+	 * cases. The emulator doesn't necessarily support all instructions, so
+	 * we force the read from addr to use a mov instruction.
+	 */
+	asm_inline("movl %1, %0" : "=r"(out): "m"(*addr));
+
+	return out;
 }
 
 extern void native_apic_wait_icr_idle(void);
