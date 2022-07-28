@@ -101,7 +101,7 @@ CONFIG_BPF_JIT_DEFAULT_ON=y
 CONFIG_PREEMPT_NONE=y
 # CONFIG_PREEMPT_VOLUNTARY is not set
 # CONFIG_PREEMPT is not set
-# CONFIG_SCHED_CORE is not set
+CONFIG_SCHED_CORE=y
 
 #
 # CPU/Task time and stats accounting
