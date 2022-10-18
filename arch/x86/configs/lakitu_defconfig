@@ -1,6 +1,6 @@
 #
 # Automatically generated file; DO NOT EDIT.
-# Linux/x86_64 5.15.71 Kernel Configuration
+# Linux/x86_64 5.15.74 Kernel Configuration
 #
 CONFIG_CC_VERSION_TEXT="Chromium OS 14.0_pre445002_p20220217-r2 clang version 14.0.0 (/var/tmp/portage/sys-devel/llvm-14.0_pre445002_p20220217-r2/work/llvm-14.0_pre445002_p20220217/clang 18308e171b5b1dd99627a4d88c7d6c5ff21b8c96)"
 CONFIG_GCC_VERSION=0
@@ -1824,7 +1824,7 @@ CONFIG_VMWARE_VMCI=y
 # CONFIG_HABANA_AI is not set
 # CONFIG_UACCE is not set
 CONFIG_PVPANIC=y
-# CONFIG_PVPANIC_MMIO is not set
+CONFIG_PVPANIC_MMIO=y
 # CONFIG_PVPANIC_PCI is not set
 # end of Misc devices
 
