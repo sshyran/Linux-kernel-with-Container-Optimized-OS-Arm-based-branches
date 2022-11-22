@@ -9040,7 +9040,7 @@ static int io_sqpoll_wait_sq(struct io_ring_ctx *ctx)
 
 		if (unlikely(ctx->sqo_dead)) {
 			ret = -EOWNERDEAD;
-			goto out;
+			break;
 		}
 
 		if (!io_sqring_full(ctx))
@@ -9050,7 +9050,6 @@ static int io_sqpoll_wait_sq(struct io_ring_ctx *ctx)
 	} while (!signal_pending(current));
 
 	finish_wait(&ctx->sqo_sq_wait, &wait);
-out:
 	return ret;
 }
 
